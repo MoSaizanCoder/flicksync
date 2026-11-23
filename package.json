@@ -1,0 +1,13 @@
+{
+  "name": "flicksync-zero-trace-watch-party",
+  "version": "1.0.0",
+  "description": "Zero-trace, RAM-only P2P movie streaming, screen share, and video call watch party",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}

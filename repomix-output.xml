@@ -1,0 +1,2585 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+public/
+  index.html
+  styles.css
+package.json
+server.js
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="public/index.html">
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RAMStream — Zero-Storage Watch Party</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js" crossorigin="anonymous"></script>
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body class="min-h-screen flex flex-col font-sans">
+
+  <!-- Top Header (Hidden in Theater Fullscreen) -->
+  <header id="topHeader" class="bg-slate-900 border-b border-slate-800 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+    <div class="flex items-center gap-3">
+      <span class="text-xl font-bold tracking-tight text-indigo-400">🎬 RAMStream</span>
+      <span id="roomBadge" class="text-xs bg-slate-800 border border-slate-700 px-2.5 py-1 rounded-full text-slate-300"></span>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-2">
+      <!-- One-Time Room Password Button (Optional; permanently locks once set) -->
+      <button id="roomPasswordBtn" class="bg-slate-800 hover:bg-amber-600/90 text-xs font-medium px-3 py-2 rounded-lg border border-slate-700 transition">
+        🔓 Set Password
+      </button>
+      <button id="newRoomBtn" class="bg-slate-800 hover:bg-slate-700 text-xs px-3 py-2 rounded-lg border border-slate-700 transition">
+        + New Session
+      </button>
+      <button id="copyLinkBtn" class="bg-indigo-600 hover:bg-indigo-500 text-xs font-medium px-3 py-2 rounded-lg transition">
+        Copy Invite Link
+      </button>
+      <button id="qrBtn" class="bg-emerald-600 hover:bg-emerald-500 text-xs font-medium px-3 py-2 rounded-lg transition">
+        📱 Switch to Mobile (QR)
+      </button>
+    </div>
+  </header>
+
+  <!-- Slide-Out Side Drawer for Queued Videos -->
+  <div id="queueBackdrop" class="queue-backdrop hidden"></div>
+  <aside id="queueDrawer" class="queue-drawer">
+    <div class="flex items-center justify-between pb-3 mb-3 border-b border-slate-800">
+      <div>
+        <h3 class="text-sm font-bold text-slate-100">📋 Up Next Queue</h3>
+        <p class="text-[11px] text-slate-400">Stored in owner's local RAM only</p>
+      </div>
+      <button id="closeQueueDrawerBtn" class="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs px-2.5 py-1.5 rounded-lg border border-slate-700">
+        ✕
+      </button>
+    </div>
+
+    <div class="mb-3">
+      <label class="cursor-pointer w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium py-2.5 px-3 rounded-lg transition">
+        <span>➕ Add Another Video to Queue</span>
+        <input id="localFileInputDrawer" type="file" accept="video/*,.mkv,.avi" class="hidden" />
+      </label>
+    </div>
+
+    <div id="queueList" class="flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-2">
+      <p class="text-xs text-slate-500 italic">Queue is empty. Load a video while another is playing to add it here.</p>
+    </div>
+  </aside>
+
+  <!-- Main Workspace -->
+  <main class="workspace-shell">
+
+    <!-- Theater Stage Column -->
+    <section class="theater-stage-col flex flex-col gap-3 min-w-0">
+      <div class="video-frame-box relative bg-black rounded-xl overflow-hidden border border-slate-800 aspect-video flex items-center justify-center shadow-lg">
+        <video id="cinemaVideo" class="w-full h-full object-contain" playsinline></video>
+        <audio id="cinemaAudio" autoplay playsinline></audio>
+
+        <!-- Gesture Zone for Single-Tap Play/Pause & Double-Tap +/-10s Seek -->
+        <div id="videoGestureZone" class="absolute inset-0 z-10 cursor-pointer"></div>
+
+        <!-- Sliding-Window Buffer Status Pill -->
+        <div id="audioEngineBadge" class="hidden absolute top-3 left-3 bg-indigo-950/90 border border-indigo-500/50 text-indigo-200 text-[11px] px-3 py-1.5 rounded-full z-20 flex items-center gap-2">
+          <span class="w-2 h-2 bg-indigo-400 rounded-full animate-ping"></span>
+          <span id="audioEngineText">Buffering 5-min audio window...</span>
+        </div>
+
+        <!-- Queue Toast Notification -->
+        <div id="queueToast" class="hidden absolute top-3 right-3 bg-emerald-950/95 border border-emerald-500/60 text-emerald-200 text-xs px-3.5 py-2 rounded-xl shadow-lg z-30">
+        </div>
+
+        <!-- Empty Stage Overlay -->
+        <div id="stagePlaceholder" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/95 text-center p-6 z-10">
+          <p class="text-lg font-semibold text-slate-200 mb-1">No Active Movie or Screen Stream</p>
+          <p class="text-xs text-slate-400 max-w-md mb-4">
+            Select any movie (even 10 GB+ .mkv files). Only one stream plays at a time—adding another video while one is active places it in the Up Next queue.
+          </p>
+          <div class="flex flex-wrap gap-3 justify-center">
+            <label class="cursor-pointer bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition">
+              📂 Stream Local Video File
+              <input id="localFileInput" type="file" accept="video/*,.mkv,.avi" class="hidden" />
+            </label>
+            <button id="shareScreenBtn" class="bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition">
+              🖥️ Share Screen / Tab
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Synchronized Playback Slider Bar -->
+      <div id="customPlayerBar" class="hidden bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2.5 flex items-center gap-2.5">
+        <button id="playPauseBtn" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition shrink-0">
+          ⏸ Pause
+        </button>
+        <span id="currentTimeLabel" class="text-xs font-mono text-slate-300 shrink-0">00:00</span>
+        <input id="seekSlider" type="range" min="0" max="100" step="any" value="0" class="studio-slider flex-1" />
+        <span id="durationLabel" class="text-xs font-mono text-slate-400 shrink-0">00:00</span>
+        <button id="fullscreenBtn" class="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs px-2.5 py-1.5 rounded-lg border border-slate-700 transition shrink-0" title="Toggle Theater Fullscreen">
+          ⛶
+        </button>
+      </div>
+
+      <!-- Normal Mode Control Bar & Clickable Link Sharing Box -->
+      <div id="normalSourceBar" class="bg-slate-900 border border-slate-800 rounded-xl p-3.5 flex flex-col gap-3">
+        <div class="flex flex-wrap items-center justify-between gap-4">
+          <div class="flex flex-wrap items-center gap-2">
+            <label class="cursor-pointer bg-slate-800 hover:bg-slate-700 text-xs font-medium px-3 py-2 rounded-lg border border-slate-700 transition">
+              <span id="loadFileLabel">📂 Load Local Video</span>
+              <input id="localFileInputBar" type="file" accept="video/*,.mkv,.avi" class="hidden" />
+            </label>
+            <button id="shareScreenBtnBar" class="bg-slate-800 hover:bg-slate-700 text-xs font-medium px-3 py-2 rounded-lg border border-slate-700 transition">
+              🖥️ Share Screen
+            </button>
+            <button id="stopStreamBtn" class="hidden bg-rose-600 hover:bg-rose-500 text-xs font-medium px-3 py-2 rounded-lg transition">
+              ⏹ Stop Movie
+            </button>
+
+            <!-- Queue Drawer Button -->
+            <button id="toggleQueueBtn" class="bg-slate-800 hover:bg-slate-700 text-xs font-medium px-3 py-2 rounded-lg border border-slate-700 transition flex items-center gap-1.5">
+              <span>📋 Queue</span>
+              <span id="queueCountBadge" class="bg-indigo-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">0</span>
+            </button>
+          </div>
+
+          <!-- Independent Volume Sliders -->
+          <div class="flex flex-wrap items-center gap-5">
+            <div class="flex items-center gap-2">
+              <span class="text-xs text-slate-300 font-medium">🎬 Movie Vol:</span>
+              <input id="cinemaVolume" type="range" min="0" max="1" step="0.02" value="1" class="studio-slider w-24" />
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="text-xs text-slate-300 font-medium">🗣️ Call Vol:</span>
+              <input id="callVolume" type="range" min="0" max="1" step="0.02" value="1" class="studio-slider emerald w-24" />
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Live Video Call Sidebar -->
+    <aside class="call-sidebar">
+      <div id="callSidebarHeader" class="flex items-center justify-between">
+        <h2 class="text-sm font-semibold text-slate-200">Live Video Call</h2>
+        <span id="peerCountBadge" class="text-[11px] text-emerald-400">● 1 in Room</span>
+      </div>
+
+      <!-- TOP: Mic & Camera Toggle Buttons -->
+      <div class="call-top-controls">
+        <button id="toggleMicBtn" class="bg-slate-800 hover:bg-slate-700 text-xs font-medium py-2 px-2 rounded-lg border border-slate-700 transition truncate">
+          🎤 Mic On
+        </button>
+        <button id="toggleCamBtn" class="bg-slate-800 hover:bg-slate-700 text-xs font-medium py-2 px-2 rounded-lg border border-slate-700 transition truncate">
+          📷 Cam On
+        </button>
+      </div>
+
+      <!-- FULLSCREEN ONLY: Left/Right Rail Controls -->
+      <div class="fs-left-controls">
+        <div class="flex flex-col gap-1">
+          <div class="flex items-center justify-between text-[10px] text-slate-300">
+            <span>🎬 Movie</span>
+            <span id="fsMovieVolPct">100%</span>
+          </div>
+          <input id="fsCinemaVolume" type="range" min="0" max="1" step="0.02" value="1" class="studio-slider w-full" />
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <div class="flex items-center justify-between text-[10px] text-slate-300">
+            <span>🗣️ Call</span>
+            <span id="fsCallVolPct">100%</span>
+          </div>
+          <input id="fsCallVolume" type="range" min="0" max="1" step="0.02" value="1" class="studio-slider emerald w-full" />
+        </div>
+
+        <div class="flex items-center gap-1.5 pt-1">
+          <button id="fsQueueBtn" class="flex-1 bg-slate-800 hover:bg-indigo-600 text-slate-200 hover:text-white text-[11px] font-medium py-1.5 px-2 rounded-lg border border-slate-700 transition flex items-center justify-center gap-1" title="Open Queued Videos">
+            <span>📋</span>
+            <span id="fsQueueBadge" class="bg-indigo-500 text-white text-[9px] font-bold px-1.5 rounded-full">0</span>
+          </button>
+          <button id="exitFullscreenBtn" class="bg-slate-800 hover:bg-rose-600 text-slate-200 hover:text-white text-[11px] font-medium py-1.5 px-2 rounded-lg border border-slate-700 transition" title="Exit Fullscreen">
+            ✕
+          </button>
+        </div>
+      </div>
+
+      <!-- Stacked Live Video Call Camera Boxes -->
+      <div id="webcamGrid" class="webcam-stack custom-scrollbar">
+        <div class="cam-tile">
+          <video id="localCamVideo" autoplay muted playsinline></video>
+          <span id="localCamLabel" class="cam-badge">You</span>
+        </div>
+      </div>
+
+      <!-- Live Chat & Clickable Link Box (Floats at Bottom of Camera Rail in Fullscreen) -->
+      <div id="roomChatBox" class="room-chat-box">
+        <div id="chatMessagesFeed" class="chat-messages-feed custom-scrollbar hidden"></div>
+        <form id="chatForm" class="flex items-center gap-1.5">
+          <input
+            id="chatInput"
+            type="text"
+            maxlength="500"
+            placeholder="💬 Message or paste link..."
+            class="flex-1 min-w-0 bg-slate-950/90 border border-slate-700 focus:border-indigo-500 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 placeholder-slate-400 outline-none"
+            required
+          />
+          <button
+            id="chatSendBtn"
+            type="submit"
+            class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-2.5 py-1.5 rounded-lg transition shrink-0"
+          >
+            Send
+          </button>
+        </form>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- Set Room Password Modal (One-Time Lock, Optional) -->
+  <div id="setPasswordModal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-sm w-full shadow-2xl">
+      <h3 class="text-base font-bold text-slate-100 mb-1">🔒 Set Room Password (Optional)</h3>
+      <p class="text-xs text-amber-300/90 bg-amber-950/50 border border-amber-500/30 rounded-lg p-2.5 mb-4">
+        Warning: Once set, this password <strong>cannot be viewed, changed, or reset</strong>. If forgotten, you must create a new room.
+      </p>
+      <form id="setPasswordForm" class="flex flex-col gap-3">
+        <input
+          id="newRoomPasswordInput"
+          type="password"
+          minlength="3"
+          maxlength="64"
+          placeholder="Enter password (min 3 characters)"
+          class="w-full bg-slate-950 border border-slate-700 focus:border-indigo-500 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none"
+          required
+        />
+        <p id="setPasswordError" class="hidden text-xs text-rose-400"></p>
+        <div class="flex gap-2">
+          <button type="button" id="cancelSetPasswordBtn" class="flex-1 bg-slate-800 hover:bg-slate-700 text-xs font-medium py-2.5 rounded-lg border border-slate-700">
+            Cancel
+          </button>
+          <button type="submit" class="flex-1 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-xs py-2.5 rounded-lg">
+            Lock Room Now
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Enter Password Gate Modal (Blocks Unauthorized Users) -->
+  <div id="unlockRoomModal" class="hidden fixed inset-0 bg-slate-950/95 backdrop-blur-md flex items-center justify-center p-4 z-50">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-sm w-full text-center shadow-2xl">
+      <div class="text-3xl mb-2">🔒</div>
+      <h3 class="text-base font-bold text-slate-100 mb-1">Password-Protected Room</h3>
+      <p class="text-xs text-slate-400 mb-4">
+        This watch party is locked. Enter the room password to join, or start a new room.
+      </p>
+      <form id="unlockRoomForm" class="flex flex-col gap-3">
+        <input
+          id="unlockPasswordInput"
+          type="password"
+          placeholder="Enter room password..."
+          class="w-full bg-slate-950 border border-slate-700 focus:border-indigo-500 rounded-lg px-3 py-2.5 text-xs text-slate-100 outline-none"
+          required
+        />
+        <p id="unlockPasswordError" class="hidden text-xs text-rose-400"></p>
+        <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs py-2.5 rounded-lg transition">
+          Unlock & Join Room
+        </button>
+        <button type="button" id="unlockNewRoomBtn" class="w-full bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs py-2 rounded-lg border border-slate-700 transition">
+          + Create New Room Instead
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- QR Code Modal -->
+  <div id="qrModal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-xs w-full text-center shadow-2xl">
+      <h3 class="text-base font-bold text-slate-100 mb-1">Switch to Mobile</h3>
+      <p class="text-xs text-slate-400 mb-4">Scan this QR code with your phone camera to open this exact session on mobile.</p>
+      <div id="qrContainer" class="bg-white p-3 rounded-xl inline-block mx-auto mb-4"></div>
+      <p id="qrUrlText" class="text-[11px] text-slate-400 break-all mb-4"></p>
+      <button id="closeQrBtn" class="w-full bg-slate-800 hover:bg-slate-700 text-xs font-medium py-2.5 rounded-lg border border-slate-700">
+        Close
+      </button>
+    </div>
+  </div>
+
+  <script>
+    const socket = io({ autoConnect: false });
+
+    const pathParts = window.location.pathname.split('/');
+    let roomId = pathParts[1] === 'room' && pathParts[2]
+      ? pathParts[2].replace(/[^a-zA-Z0-9_-]/g, '')
+      : null;
+    if (!roomId || roomId.length < 3) {
+      roomId = Math.random().toString(36).substring(2, 9);
+      window.history.replaceState({}, '', `/room/${roomId}`);
+    }
+    document.getElementById('roomBadge').textContent = `Room: ${roomId}`;
+
+    const rtcConfig = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        {
+          urls: 'turn:openrelay.metered.ca:80',
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        },
+        {
+          urls: 'turn:openrelay.metered.ca:443',
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        }
+      ]
+    };
+
+    const callPeers = {};
+    const cinemaPeers = {};
+    const remoteCallVideos = {};
+    const iceCandidateQueues = { call: {}, cinema: {} };
+    let knownPeers = new Set();
+
+    let isRoomAuthorized = false;
+    let isPasswordLocked = false;
+    let mediaInitialized = false;
+
+    let localCallStream = null;
+    let localCinemaStream = null;
+    let isHostingCinema = false;
+    let roomActiveHostId = null;
+    let currentCinemaMode = null;
+    let currentObjectUrl = null;
+    let currentAudioObjectUrl = null;
+    let isRemoteSyncing = false;
+    let isDraggingSlider = false;
+    let isRemotePaused = false;
+    let didVideoEnd = false;
+
+    const localQueuedFiles = new Map();
+
+    // Web Audio API bridge
+    let audioCtx = null;
+    let audioSourceNode = null;
+    let audioDestNode = null;
+
+    // Sliding-Window On-Demand Buffer State
+    const WINDOW_DURATION_SEC = 300;
+    const PREFETCH_THRESHOLD_SEC = 120;
+    let ffmpegInstance = null;
+    let activeFileRef = null;
+    let usesChunkedAudio = false;
+    let windowStartSec = 0;
+    let windowEndSec = 0;
+    let isExtractingWindow = false;
+    let windowJobId = 0;
+
+    const cinemaVideo = document.getElementById('cinemaVideo');
+    const cinemaAudio = document.getElementById('cinemaAudio');
+    const stagePlaceholder = document.getElementById('stagePlaceholder');
+    const stopStreamBtn = document.getElementById('stopStreamBtn');
+
+    const audioEngineBadge = document.getElementById('audioEngineBadge');
+    const audioEngineText = document.getElementById('audioEngineText');
+    const queueToast = document.getElementById('queueToast');
+
+    const customPlayerBar = document.getElementById('customPlayerBar');
+    const playPauseBtn = document.getElementById('playPauseBtn');
+    const seekSlider = document.getElementById('seekSlider');
+    const currentTimeLabel = document.getElementById('currentTimeLabel');
+    const durationLabel = document.getElementById('durationLabel');
+
+    // Password UI Elements
+    const roomPasswordBtn = document.getElementById('roomPasswordBtn');
+    const setPasswordModal = document.getElementById('setPasswordModal');
+    const setPasswordForm = document.getElementById('setPasswordForm');
+    const newRoomPasswordInput = document.getElementById('newRoomPasswordInput');
+    const setPasswordError = document.getElementById('setPasswordError');
+    const unlockRoomModal = document.getElementById('unlockRoomModal');
+    const unlockRoomForm = document.getElementById('unlockRoomForm');
+    const unlockPasswordInput = document.getElementById('unlockPasswordInput');
+    const unlockPasswordError = document.getElementById('unlockPasswordError');
+
+    function markPasswordLockedUI() {
+      isPasswordLocked = true;
+      roomPasswordBtn.textContent = '🔒 Password Locked';
+      roomPasswordBtn.classList.remove('hover:bg-amber-600/90');
+      roomPasswordBtn.classList.add('bg-emerald-950/80', 'border-emerald-600/50', 'text-emerald-300', 'cursor-default');
+      setPasswordModal.classList.add('hidden');
+      newRoomPasswordInput.value = '';
+    }
+
+    roomPasswordBtn.addEventListener('click', () => {
+      if (!isRoomAuthorized) return;
+      if (isPasswordLocked) {
+        showToast('🔒 Room password is permanently locked and cannot be viewed or changed.');
+        return;
+      }
+      setPasswordError.classList.add('hidden');
+      newRoomPasswordInput.value = '';
+      setPasswordModal.classList.remove('hidden');
+      newRoomPasswordInput.focus();
+    });
+
+    document.getElementById('cancelSetPasswordBtn').addEventListener('click', () => {
+      setPasswordModal.classList.add('hidden');
+      newRoomPasswordInput.value = '';
+    });
+
+    setPasswordForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const pwd = newRoomPasswordInput.value.trim();
+      if (pwd.length < 3) {
+        setPasswordError.textContent = 'Password must be at least 3 characters.';
+        setPasswordError.classList.remove('hidden');
+        return;
+      }
+      socket.emit('set-room-password', { password: pwd });
+      newRoomPasswordInput.value = ''; // Wipe from DOM immediately
+    });
+
+    socket.on('room-password-locked', () => {
+      markPasswordLockedUI();
+      showToast('🔒 Room password locked! New visitors must enter it to join.');
+    });
+
+    socket.on('password-set-result', ({ ok, message }) => {
+      if (!ok) {
+        setPasswordError.textContent = message;
+        setPasswordError.classList.remove('hidden');
+      }
+    });
+
+    // Gate for unauthorized newcomers entering a password-protected room
+    socket.on('password-required', () => {
+      unlockPasswordError.classList.add('hidden');
+      unlockRoomModal.classList.remove('hidden');
+      unlockPasswordInput.focus();
+    });
+
+    socket.on('password-invalid', ({ message }) => {
+      unlockPasswordError.textContent = message || 'Incorrect password.';
+      unlockPasswordError.classList.remove('hidden');
+      unlockPasswordInput.value = '';
+      unlockPasswordInput.focus();
+    });
+
+    unlockRoomForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const pwd = unlockPasswordInput.value;
+      unlockPasswordInput.value = '';
+      socket.emit('join-room', { roomId, password: pwd });
+    });
+
+    document.getElementById('unlockNewRoomBtn').addEventListener('click', () => {
+      const newId = Math.random().toString(36).substring(2, 9);
+      window.location.href = `/room/${newId}`;
+    });
+
+    // Connect socket first; only initialize camera/mic AFTER server authorizes room entry
+    socket.connect();
+    socket.on('connect', () => {
+      socket.emit('join-room', { roomId });
+    });
+
+    socket.on('join-success', async ({ isPasswordLocked: locked }) => {
+      isRoomAuthorized = true;
+      unlockRoomModal.classList.add('hidden');
+      if (locked) markPasswordLockedUI();
+
+      if (!mediaInitialized) {
+        mediaInitialized = true;
+        try {
+          localCallStream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 640 }, height: { ideal: 360 } },
+            audio: { echoCancellation: true, noiseSuppression: true }
+          });
+          document.getElementById('localCamVideo').srcObject = localCallStream;
+        } catch (err) {
+          console.warn('Camera/Mic blocked or unavailable:', err);
+          localCallStream = new MediaStream();
+        }
+        // Attach local call tracks to any peers created during initial handshake
+        Object.entries(callPeers).forEach(([peerId, pc]) => {
+          if (localCallStream && localCallStream.getTracks().length > 0) {
+            localCallStream.getTracks().forEach(track => pc.addTrack(track, localCallStream));
+            createPeer(peerId, 'call', true);
+          }
+        });
+      }
+    });
+
+    // Live Chat + Auto-Clickable Links (XSS-Safe DOM Parser)
+    const chatForm = document.getElementById('chatForm');
+    const chatInput = document.getElementById('chatInput');
+    const chatMessagesFeed = document.getElementById('chatMessagesFeed');
+
+    chatForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (!isRoomAuthorized) return;
+      const text = chatInput.value.trim();
+      if (!text) return;
+      socket.emit('chat-message', { text });
+      chatInput.value = '';
+    });
+
+    function appendTextWithClickableLinks(container, rawText) {
+      const urlRegex = /(https?:\/\/[^\s]+)/g;
+      const parts = rawText.split(urlRegex);
+
+      parts.forEach((part) => {
+        if (!part) return;
+        if (part.startsWith('http://') || part.startsWith('https://')) {
+          try {
+            const parsed = new URL(part);
+            if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+              const a = document.createElement('a');
+              a.href = parsed.href;
+              a.target = '_blank';
+              a.rel = 'noopener noreferrer';
+              a.className = 'chat-msg-link';
+              a.textContent = part;
+              container.appendChild(a);
+              return;
+            }
+          } catch (_) {}
+        }
+        container.appendChild(document.createTextNode(part));
+      });
+    }
+
+    socket.on('chat-updated', (messages) => {
+      if (!Array.isArray(messages) || messages.length === 0) {
+        chatMessagesFeed.classList.add('hidden');
+        chatMessagesFeed.innerHTML = '';
+        return;
+      }
+
+      chatMessagesFeed.classList.remove('hidden');
+      chatMessagesFeed.innerHTML = '';
+
+      messages.forEach((msg) => {
+        const bubble = document.createElement('div');
+        bubble.className = 'chat-msg-bubble';
+
+        const senderSpan = document.createElement('span');
+        senderSpan.className = msg.senderId === socket.id
+          ? 'font-semibold text-emerald-400 mr-1'
+          : 'font-semibold text-indigo-300 mr-1';
+        senderSpan.textContent = msg.senderId === socket.id ? 'You:' : `${msg.senderName}:`;
+
+        bubble.appendChild(senderSpan);
+        appendTextWithClickableLinks(bubble, msg.text);
+        chatMessagesFeed.appendChild(bubble);
+      });
+
+      chatMessagesFeed.scrollTop = chatMessagesFeed.scrollHeight;
+    });
+
+    // Slide-Out Queue Drawer Elements
+    const toggleQueueBtn = document.getElementById('toggleQueueBtn');
+    const fsQueueBtn = document.getElementById('fsQueueBtn');
+    const queueDrawer = document.getElementById('queueDrawer');
+    const queueBackdrop = document.getElementById('queueBackdrop');
+    const closeQueueDrawerBtn = document.getElementById('closeQueueDrawerBtn');
+    const queueList = document.getElementById('queueList');
+    const queueCountBadge = document.getElementById('queueCountBadge');
+    const fsQueueBadge = document.getElementById('fsQueueBadge');
+    const loadFileLabel = document.getElementById('loadFileLabel');
+
+    function openQueueDrawer() {
+      queueDrawer.classList.add('open');
+      queueBackdrop.classList.remove('hidden');
+    }
+
+    function closeQueueDrawer() {
+      queueDrawer.classList.remove('open');
+      queueBackdrop.classList.add('hidden');
+    }
+
+    toggleQueueBtn.addEventListener('click', openQueueDrawer);
+    fsQueueBtn.addEventListener('click', openQueueDrawer);
+    closeQueueDrawerBtn.addEventListener('click', closeQueueDrawer);
+    queueBackdrop.addEventListener('click', closeQueueDrawer);
+
+    // Theater Fullscreen + Mobile Auto-Landscape + Auto-Hide Bar
+    const fullscreenBtn = document.getElementById('fullscreenBtn');
+    const exitFullscreenBtn = document.getElementById('exitFullscreenBtn');
+    const videoGestureZone = document.getElementById('videoGestureZone');
+    const videoFrameBox = document.querySelector('.video-frame-box');
+    let hideBarTimer = null;
+
+    function resetPlayerBarAutoHide() {
+      customPlayerBar.classList.remove('bar-hidden');
+      if (hideBarTimer) clearTimeout(hideBarTimer);
+
+      if (document.body.classList.contains('theater-fullscreen') && !isDraggingSlider) {
+        hideBarTimer = setTimeout(() => {
+          customPlayerBar.classList.add('bar-hidden');
+        }, 3000);
+      }
+    }
+
+    async function toggleTheaterFullscreen(forceState) {
+      const shouldEnter = typeof forceState === 'boolean'
+        ? forceState
+        : !document.body.classList.contains('theater-fullscreen');
+
+      if (shouldEnter) {
+        document.body.classList.add('theater-fullscreen');
+        fullscreenBtn.textContent = '🗗';
+
+        if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+          await document.documentElement.requestFullscreen().catch(() => {});
+        }
+        if (screen.orientation && screen.orientation.lock) {
+          await screen.orientation.lock('landscape').catch(() => {});
+        }
+        resetPlayerBarAutoHide();
+      } else {
+        document.body.classList.remove('theater-fullscreen');
+        customPlayerBar.classList.remove('bar-hidden');
+        if (hideBarTimer) clearTimeout(hideBarTimer);
+        fullscreenBtn.textContent = '⛶';
+
+        if (screen.orientation && screen.orientation.unlock) {
+          try { screen.orientation.unlock(); } catch (_) {}
+        }
+        if (document.fullscreenElement && document.exitFullscreen) {
+          await document.exitFullscreen().catch(() => {});
+        }
+      }
+    }
+
+    fullscreenBtn.addEventListener('click', () => toggleTheaterFullscreen());
+    exitFullscreenBtn.addEventListener('click', () => toggleTheaterFullscreen(false));
+
+    document.addEventListener('fullscreenchange', () => {
+      if (!document.fullscreenElement && document.body.classList.contains('theater-fullscreen')) {
+        document.body.classList.remove('theater-fullscreen');
+        customPlayerBar.classList.remove('bar-hidden');
+        if (hideBarTimer) clearTimeout(hideBarTimer);
+        fullscreenBtn.textContent = '⛶';
+        if (screen.orientation && screen.orientation.unlock) {
+          try { screen.orientation.unlock(); } catch (_) {}
+        }
+      }
+    });
+
+    videoFrameBox.addEventListener('mousemove', resetPlayerBarAutoHide);
+    videoFrameBox.addEventListener('touchstart', resetPlayerBarAutoHide, { passive: true });
+    customPlayerBar.addEventListener('mousemove', resetPlayerBarAutoHide);
+    customPlayerBar.addEventListener('touchstart', resetPlayerBarAutoHide, { passive: true });
+
+    // Single-Tap Play/Pause & Double-Tap +/-10s Seek
+    function showSeekFeedback(side, text) {
+      const existing = videoFrameBox.querySelector('.seek-toast-pill');
+      if (existing) existing.remove();
+
+      const pill = document.createElement('div');
+      pill.className = `seek-toast-pill ${side}`;
+      pill.textContent = text;
+      videoFrameBox.appendChild(pill);
+      setTimeout(() => pill.remove(), 680);
+    }
+
+    function seekRelativeSeconds(deltaSec) {
+      const maxDur = parseFloat(seekSlider.max) || (isHostingCinema ? cinemaVideo.duration : 0) || 0;
+      const currentPos = isHostingCinema ? cinemaVideo.currentTime : parseFloat(seekSlider.value);
+      const nextTime = Math.max(0, Math.min(maxDur || currentPos + deltaSec, currentPos + deltaSec));
+
+      seekSlider.value = nextTime;
+      currentTimeLabel.textContent = formatTime(nextTime);
+
+      if (isHostingCinema) {
+        cinemaVideo.currentTime = nextTime;
+      } else {
+        socket.emit('cinema-sync', { action: 'seek', currentTime: nextTime });
+      }
+    }
+
+    let singleTapTimer = null;
+    let lastTapTime = 0;
+
+    videoGestureZone.addEventListener('click', (e) => {
+      resetPlayerBarAutoHide();
+      const now = Date.now();
+      const rect = videoGestureZone.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const isLeftSide = clickX < rect.width * 0.45;
+
+      if (now - lastTapTime < 280) {
+        if (singleTapTimer) {
+          clearTimeout(singleTapTimer);
+          singleTapTimer = null;
+        }
+        lastTapTime = 0;
+
+        if (isLeftSide) {
+          seekRelativeSeconds(-10);
+          showSeekFeedback('left', '⏪ -10s');
+        } else {
+          seekRelativeSeconds(10);
+          showSeekFeedback('right', '+10s ⏩');
+        }
+        return;
+      }
+
+      lastTapTime = now;
+      singleTapTimer = setTimeout(() => {
+        singleTapTimer = null;
+        playPauseBtn.click();
+      }, 250);
+    });
+
+    function showToast(msg) {
+      queueToast.textContent = msg;
+      queueToast.classList.remove('hidden');
+      setTimeout(() => queueToast.classList.add('hidden'), 3200);
+    }
+
+    function getCapturedAudioTrackFromElement() {
+      if (!audioCtx) {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        audioCtx = new AudioContextClass();
+        audioSourceNode = audioCtx.createMediaElementSource(cinemaAudio);
+        audioDestNode = audioCtx.createMediaStreamDestination();
+        audioSourceNode.connect(audioCtx.destination);
+        audioSourceNode.connect(audioDestNode);
+      }
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume().catch(() => {});
+      }
+      return audioDestNode.stream.getAudioTracks()[0];
+    }
+
+    function formatTime(sec) {
+      if (!isFinite(sec) || sec < 0) return '00:00';
+      const hrs = Math.floor(sec / 3600);
+      const mins = Math.floor((sec % 3600) / 60);
+      const secs = Math.floor(sec % 60);
+      const mm = mins < 10 ? `0${mins}` : `${mins}`;
+      const ss = secs < 10 ? `0${secs}` : `${secs}`;
+      return hrs > 0 ? `${hrs}:${mm}:${ss}` : `${mm}:${ss}`;
+    }
+
+    function updatePeerBadge() {
+      const count = knownPeers.size + 1;
+      document.getElementById('peerCountBadge').textContent = `● ${count} in Room`;
+    }
+
+    function createPeer(targetId, mediaType, isInitiator) {
+      const peerStore = mediaType === 'call' ? callPeers : cinemaPeers;
+      if (peerStore[targetId]) {
+        peerStore[targetId].close();
+      }
+      iceCandidateQueues[mediaType][targetId] = [];
+
+      const pc = new RTCPeerConnection(rtcConfig);
+      peerStore[targetId] = pc;
+
+      const streamToAttach = mediaType === 'call' ? localCallStream : localCinemaStream;
+      if (streamToAttach && streamToAttach.getTracks().length > 0) {
+        streamToAttach.getTracks().forEach(track => pc.addTrack(track, streamToAttach));
+      } else if (mediaType === 'call') {
+        pc.addTransceiver('video', { direction: 'recvonly' });
+        pc.addTransceiver('audio', { direction: 'recvonly' });
+      }
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          socket.emit('ice-candidate', {
+            target: targetId,
+            candidate: e.candidate,
+            mediaType
+          });
+        }
+      };
+
+      pc.ontrack = (e) => {
+        const remoteStream = e.streams[0] || new MediaStream([e.track]);
+        if (mediaType === 'call') {
+          renderRemoteCallVideo(targetId, remoteStream);
+        } else if (mediaType === 'cinema' && !isHostingCinema) {
+          stagePlaceholder.classList.add('hidden');
+          stopStreamBtn.classList.remove('hidden');
+          customPlayerBar.classList.remove('hidden');
+
+          cinemaVideo.src = '';
+          cinemaVideo.srcObject = remoteStream;
+          cinemaVideo.muted = true;
+          cinemaVideo.play().catch(() => {});
+
+          cinemaAudio.src = '';
+          cinemaAudio.srcObject = remoteStream;
+          cinemaAudio.muted = false;
+          cinemaAudio.volume = parseFloat(document.getElementById('cinemaVolume').value);
+          cinemaAudio.play().catch(() => {});
+          
+        }
+      };
+
+      if (isInitiator) {
+        pc.createOffer()
+          .then(offer => pc.setLocalDescription(offer))
+          .then(() => {
+            socket.emit('offer', {
+              target: targetId,
+              sdp: pc.localDescription,
+              mediaType
+            });
+          });
+      }
+
+      return pc;
+    }
+
+    async function flushIceQueue(pc, mediaType, peerId) {
+      const queue = iceCandidateQueues[mediaType][peerId] || [];
+      while (queue.length > 0) {
+        const candidate = queue.shift();
+        await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+      }
+    }
+
+    socket.on('all-users', (users) => {
+      users.forEach(userId => {
+        knownPeers.add(userId);
+        createPeer(userId, 'call', true);
+      });
+      updatePeerBadge();
+      if (users.length > 0) {
+        socket.emit('request-cinema');
+      }
+    });
+
+    socket.on('user-joined', (userId) => {
+      knownPeers.add(userId);
+      updatePeerBadge();
+    });
+
+    socket.on('request-cinema', ({ requesterId }) => {
+      knownPeers.add(requesterId);
+      updatePeerBadge();
+      if (isHostingCinema && localCinemaStream) {
+        createPeer(requesterId, 'cinema', true);
+        socket.emit('cinema-time', {
+          currentTime: cinemaVideo.currentTime || 0,
+          duration: cinemaVideo.duration || 0,
+          paused: cinemaVideo.paused,
+          ended: cinemaVideo.ended
+        });
+      }
+    });
+
+    // XSS-Safe Queue Rendering (Uses textContent only, never innerHTML for user titles)
+    socket.on('queue-updated', ({ activeHostId, queue }) => {
+      roomActiveHostId = activeHostId;
+      queueCountBadge.textContent = queue.length;
+      fsQueueBadge.textContent = queue.length;
+
+      loadFileLabel.textContent = activeHostId ? '➕ Add Video to Queue' : '📂 Load Local Video';
+
+      if (queue.length === 0) {
+        queueList.innerHTML = '<p class="text-xs text-slate-500 italic">Queue is empty. Load a video while another is playing to add it here.</p>';
+        return;
+      }
+
+      queueList.innerHTML = '';
+      queue.forEach((item, index) => {
+        const isMine = item.ownerId === socket.id;
+        const row = document.createElement('div');
+        row.className = 'flex items-center justify-between gap-2 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2';
+
+        const info = document.createElement('div');
+        info.className = 'min-w-0 flex-1';
+
+        const titleP = document.createElement('p');
+        titleP.className = 'text-xs font-medium text-slate-200 truncate';
+        titleP.textContent = `${index + 1}. ${item.title}`;
+
+        const ownerP = document.createElement('p');
+        ownerP.className = 'text-[10px] text-slate-400';
+        ownerP.textContent = `Queued by ${isMine ? 'You' : item.ownerName}`;
+
+        info.appendChild(titleP);
+        info.appendChild(ownerP);
+
+        const actions = document.createElement('div');
+        actions.className = 'flex items-center gap-1.5 shrink-0';
+
+        const playNowBtn = document.createElement('button');
+        playNowBtn.className = 'bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-semibold px-2.5 py-1 rounded transition';
+        playNowBtn.textContent = '▶ Play';
+        playNowBtn.onclick = () => {
+          closeQueueDrawer();
+          socket.emit('queue-play-now', { queueId: item.queueId });
+        };
+
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'bg-slate-800 hover:bg-rose-600 text-slate-300 hover:text-white text-[11px] px-2 py-1 rounded transition';
+        removeBtn.textContent = '✕';
+        removeBtn.title = 'Remove from queue';
+        removeBtn.onclick = () => {
+          if (isMine) localQueuedFiles.delete(item.queueId);
+          socket.emit('queue-remove', { queueId: item.queueId });
+        };
+
+        actions.appendChild(playNowBtn);
+        actions.appendChild(removeBtn);
+        row.appendChild(info);
+        row.appendChild(actions);
+        queueList.appendChild(row);
+      });
+    });
+
+    socket.on('start-queued-item', ({ queueId }) => {
+      const file = localQueuedFiles.get(queueId);
+      if (!file) return;
+      localQueuedFiles.delete(queueId);
+      startStreamingLocalFile(file);
+    });
+
+    socket.on('offer', async ({ sdp, caller, mediaType }) => {
+      if (!isRoomAuthorized) return;
+      knownPeers.add(caller);
+      updatePeerBadge();
+      const pc = createPeer(caller, mediaType, false);
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      await flushIceQueue(pc, mediaType, caller);
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit('answer', {
+        target: caller,
+        sdp: pc.localDescription,
+        mediaType
+      });
+    });
+
+    socket.on('answer', async ({ sdp, callee, mediaType }) => {
+      const peerStore = mediaType === 'call' ? callPeers : cinemaPeers;
+      const pc = peerStore[callee];
+      if (pc) {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        await flushIceQueue(pc, mediaType, callee);
+      }
+    });
+
+    socket.on('ice-candidate', async ({ candidate, from, mediaType }) => {
+      const peerStore = mediaType === 'call' ? callPeers : cinemaPeers;
+      const pc = peerStore[from];
+      if (pc && pc.remoteDescription) {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+      } else {
+        if (!iceCandidateQueues[mediaType][from]) iceCandidateQueues[mediaType][from] = [];
+        iceCandidateQueues[mediaType][from].push(candidate);
+      }
+    });
+
+    socket.on('cinema-status', ({ active }) => {
+      if (!active) {
+        cleanupLocalCinemaUI();
+      }
+    });
+
+    socket.on('cinema-time', ({ currentTime, duration, paused, ended }) => {
+      if (isHostingCinema || isDraggingSlider) return;
+      isRemotePaused = paused;
+
+      if (ended) {
+        playPauseBtn.textContent = '▶ Replay';
+      } else {
+        playPauseBtn.textContent = paused ? '▶ Play' : '⏸ Pause';
+      }
+
+      if (isFinite(duration) && duration > 0) {
+        seekSlider.max = duration;
+        seekSlider.value = ended ? duration : currentTime;
+        currentTimeLabel.textContent = formatTime(ended ? duration : currentTime);
+        durationLabel.textContent = formatTime(duration);
+      }
+    });
+
+    socket.on('cinema-sync', async ({ action, currentTime }) => {
+      isRemoteSyncing = true;
+      if (isHostingCinema && currentCinemaMode === 'file') {
+        if (action === 'seek') {
+          cinemaVideo.currentTime = currentTime;
+          if (usesChunkedAudio) {
+            await ensureAudioWindowForTimestamp(currentTime, true);
+          }
+        }
+        if (action === 'play') {
+          await cinemaVideo.play().catch(() => {});
+          if (usesChunkedAudio && cinemaAudio.src) await cinemaAudio.play().catch(() => {});
+        } else if (action === 'pause') {
+          cinemaVideo.pause();
+          if (usesChunkedAudio && cinemaAudio.src) cinemaAudio.pause();
+        }
+        playPauseBtn.textContent = cinemaVideo.ended
+          ? '▶ Replay'
+          : (cinemaVideo.paused ? '▶ Play' : '⏸ Pause');
+      } else if (!isHostingCinema) {
+        if (action === 'play' || action === 'seek') {
+          isRemotePaused = false;
+          playPauseBtn.textContent = '⏸ Pause';
+          if (cinemaVideo.srcObject) cinemaVideo.play().catch(() => {});
+          if (cinemaAudio.srcObject) cinemaAudio.play().catch(() => {});
+        } else if (action === 'ended') {
+          isRemotePaused = true;
+          playPauseBtn.textContent = '▶ Replay';
+          seekSlider.value = seekSlider.max;
+          currentTimeLabel.textContent = durationLabel.textContent;
+        } else if (action === 'pause') {
+          isRemotePaused = true;
+          playPauseBtn.textContent = '▶ Play';
+          cinemaVideo.pause();
+          cinemaAudio.pause();
+        }
+      }
+      setTimeout(() => { isRemoteSyncing = false; }, 250);
+    });
+
+    socket.on('user-left', (userId) => {
+      knownPeers.delete(userId);
+      updatePeerBadge();
+      if (callPeers[userId]) { callPeers[userId].close(); delete callPeers[userId]; }
+      if (cinemaPeers[userId]) { cinemaPeers[userId].close(); delete cinemaPeers[userId]; }
+      const tile = document.getElementById(`tile-${userId}`);
+      if (tile) tile.remove();
+      delete remoteCallVideos[userId];
+    });
+
+    function renderRemoteCallVideo(userId, stream) {
+      let videoEl = remoteCallVideos[userId];
+      if (!videoEl) {
+        const tile = document.createElement('div');
+        tile.id = `tile-${userId}`;
+        tile.className = 'cam-tile';
+
+        videoEl = document.createElement('video');
+        videoEl.autoplay = true;
+        videoEl.playsInline = true;
+
+        const label = document.createElement('span');
+        label.className = 'cam-badge';
+        label.textContent = `Friend (${userId.slice(0, 4)})`;
+
+        tile.appendChild(videoEl);
+        tile.appendChild(label);
+        document.getElementById('webcamGrid').appendChild(tile);
+        remoteCallVideos[userId] = videoEl;
+      }
+      videoEl.srcObject = stream;
+      videoEl.volume = parseFloat(document.getElementById('callVolume').value);
+      videoEl.play().catch(() => {});
+    }
+
+    playPauseBtn.addEventListener('click', () => {
+      if (isHostingCinema) {
+        if (cinemaVideo.ended) {
+          cinemaVideo.currentTime = 0;
+          cinemaVideo.play().catch(() => {});
+        } else if (cinemaVideo.paused) {
+          cinemaVideo.play().catch(() => {});
+        } else {
+          cinemaVideo.pause();
+        }
+      } else {
+        const isAtEnd =
+          playPauseBtn.textContent.includes('Replay') ||
+          (parseFloat(seekSlider.max) > 0 &&
+            parseFloat(seekSlider.value) >= parseFloat(seekSlider.max) - 0.5);
+
+        if (isAtEnd) {
+          isRemotePaused = false;
+          playPauseBtn.textContent = '⏸ Pause';
+          seekSlider.value = 0;
+          currentTimeLabel.textContent = '00:00';
+          socket.emit('cinema-sync', { action: 'seek', currentTime: 0 });
+          socket.emit('cinema-sync', { action: 'play', currentTime: 0 });
+        } else if (isRemotePaused) {
+          isRemotePaused = false;
+          playPauseBtn.textContent = '⏸ Pause';
+          cinemaVideo.play().catch(() => {});
+          cinemaAudio.play().catch(() => {});
+          socket.emit('cinema-sync', { action: 'play', currentTime: parseFloat(seekSlider.value) });
+        } else {
+          isRemotePaused = true;
+          playPauseBtn.textContent = '▶ Play';
+          cinemaVideo.pause();
+          cinemaAudio.pause();
+          socket.emit('cinema-sync', { action: 'pause', currentTime: parseFloat(seekSlider.value) });
+        }
+      }
+    });
+
+    seekSlider.addEventListener('input', () => {
+      isDraggingSlider = true;
+      currentTimeLabel.textContent = formatTime(parseFloat(seekSlider.value));
+    });
+
+    seekSlider.addEventListener('change', () => {
+      const targetTime = parseFloat(seekSlider.value);
+      isDraggingSlider = false;
+      if (isHostingCinema) {
+        cinemaVideo.currentTime = targetTime;
+      } else {
+        socket.emit('cinema-sync', { action: 'seek', currentTime: targetTime });
+      }
+    });
+
+    // Sliding-Window Audio Extraction
+    async function loadAudioWindow(targetSec, isSeekJump = false) {
+      if (!activeFileRef) return false;
+      const myJob = ++windowJobId;
+      isExtractingWindow = true;
+
+      const sliceStart = Math.max(0, Math.floor(targetSec - (isSeekJump ? 10 : 0)));
+      const sliceDuration = WINDOW_DURATION_SEC;
+
+      audioEngineBadge.classList.remove('hidden');
+      audioEngineText.textContent = `Buffering audio ${formatTime(sliceStart)} → ${formatTime(sliceStart + sliceDuration)}...`;
+
+      try {
+        if (!window.FFmpegWASM || !window.FFmpegWASM.FFmpeg) {
+          throw new Error('FFmpegWASM script not loaded');
+        }
+        const { FFmpeg } = window.FFmpegWASM;
+        if (!ffmpegInstance) {
+          ffmpegInstance = new FFmpeg();
+          await ffmpegInstance.load({
+            coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
+            wasmURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm'
+          });
+        }
+
+        if (myJob !== windowJobId) return false;
+
+        try { await ffmpegInstance.unmount('/work'); } catch (_) {}
+        try { await ffmpegInstance.createDir('/work'); } catch (_) {}
+        await ffmpegInstance.mount('WORKERFS', { files: [activeFileRef] }, '/work');
+
+        const inputPath = `/work/${activeFileRef.name}`;
+        const chunkOut = `chunk_${myJob}.m4a`;
+
+        await ffmpegInstance.exec([
+          '-ss', String(sliceStart),
+          '-i', inputPath,
+          '-t', String(sliceDuration),
+          '-vn',
+          '-c:a', 'aac',
+          '-b:a', '128k',
+          '-ac', '2',
+          chunkOut
+        ]);
+
+        if (myJob !== windowJobId) {
+          await ffmpegInstance.deleteFile(chunkOut).catch(() => {});
+          return false;
+        }
+
+        const bytes = await ffmpegInstance.readFile(chunkOut);
+        await ffmpegInstance.deleteFile(chunkOut).catch(() => {});
+        try { await ffmpegInstance.unmount('/work'); } catch (_) {}
+
+        if (currentAudioObjectUrl) URL.revokeObjectURL(currentAudioObjectUrl);
+        const blob = new Blob([bytes.buffer], { type: 'audio/mp4' });
+        currentAudioObjectUrl = URL.createObjectURL(blob);
+
+        windowStartSec = sliceStart;
+        windowEndSec = sliceStart + sliceDuration;
+
+        cinemaAudio.srcObject = null;
+        cinemaAudio.src = currentAudioObjectUrl;
+        cinemaAudio.muted = false;
+        cinemaAudio.volume = parseFloat(document.getElementById('cinemaVolume').value);
+
+        const relativeOffset = Math.max(0, cinemaVideo.currentTime - windowStartSec);
+        cinemaAudio.currentTime = relativeOffset;
+
+        if (!cinemaVideo.paused) {
+          await cinemaAudio.play().catch(() => {});
+        }
+
+        audioEngineBadge.classList.add('hidden');
+        return true;
+      } catch (err) {
+        console.warn('On-demand AC3/DTS audio engine unavailable:', err);
+        audioEngineText.textContent = '⚠️ Browser blocked AC3/DTS decoder (HTTPS required for MKV audio)';
+        setTimeout(() => audioEngineBadge.classList.add('hidden'), 5000);
+        return false;
+      } finally {
+        if (myJob === windowJobId) {
+          isExtractingWindow = false;
+        }
+      }
+    }
+
+    async function ensureAudioWindowForTimestamp(currentTime, isSeekJump = false) {
+      if (!usesChunkedAudio || !activeFileRef) return;
+
+      if (currentTime < windowStartSec || currentTime >= windowEndSec - 5) {
+        if (!isExtractingWindow || isSeekJump) {
+          await loadAudioWindow(currentTime, true);
+        }
+        return;
+      }
+
+      const expectedAudioTime = currentTime - windowStartSec;
+      if (Math.abs(cinemaAudio.currentTime - expectedAudioTime) > 0.35) {
+        cinemaAudio.currentTime = expectedAudioTime;
+      }
+
+      if (!isExtractingWindow && (windowEndSec - currentTime) < PREFETCH_THRESHOLD_SEC) {
+        loadAudioWindow(Math.max(0, cinemaVideo.currentTime - 5), false);
+      }
+    }
+
+    function handleLocalFileSelect(e) {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (!file || !isRoomAuthorized) return;
+
+      if (roomActiveHostId || isHostingCinema) {
+        const queueId = Math.random().toString(36).substring(2, 10);
+        localQueuedFiles.set(queueId, file);
+        socket.emit('queue-add', {
+          queueId,
+          title: file.name,
+          type: 'file'
+        });
+        showToast(`📋 Added "${file.name}" to Queue`);
+        return;
+      }
+
+      startStreamingLocalFile(file);
+    }
+
+    async function startStreamingLocalFile(file) {
+      cleanupLocalCinemaUI();
+      isHostingCinema = true;
+      roomActiveHostId = socket.id;
+      currentCinemaMode = 'file';
+      activeFileRef = file;
+
+      currentObjectUrl = URL.createObjectURL(file);
+      cinemaVideo.srcObject = null;
+      cinemaAudio.srcObject = null;
+      cinemaVideo.src = currentObjectUrl;
+      cinemaVideo.muted = false;
+      cinemaVideo.volume = parseFloat(document.getElementById('cinemaVolume').value);
+      stagePlaceholder.classList.add('hidden');
+      stopStreamBtn.classList.remove('hidden');
+      customPlayerBar.classList.remove('hidden');
+
+      cinemaVideo.oncanplay = async () => {
+        cinemaVideo.oncanplay = null;
+        if (isFinite(cinemaVideo.duration)) {
+          seekSlider.max = cinemaVideo.duration;
+          durationLabel.textContent = formatTime(cinemaVideo.duration);
+        }
+        await cinemaVideo.play();
+        playPauseBtn.textContent = '⏸ Pause';
+
+        setTimeout(async () => {
+          const videoCapture = cinemaVideo.captureStream
+            ? cinemaVideo.captureStream()
+            : cinemaVideo.mozCaptureStream();
+
+          localCinemaStream = videoCapture;
+          broadcastCinemaStream('file');
+
+          if (videoCapture.getAudioTracks().length > 0) {
+            usesChunkedAudio = false;
+            return;
+          }
+
+          usesChunkedAudio = true;
+          const ok = await loadAudioWindow(cinemaVideo.currentTime, false);
+          if (ok && isHostingCinema) {
+            const webAudioTrack = getCapturedAudioTrackFromElement();
+            if (webAudioTrack) {
+              localCinemaStream.addTrack(webAudioTrack);
+              knownPeers.forEach(peerId => {
+                createPeer(peerId, 'cinema', true);
+              });
+            }
+          }
+        }, 150);
+      };
+    }
+
+    document.getElementById('localFileInput').addEventListener('change', handleLocalFileSelect);
+    document.getElementById('localFileInputBar').addEventListener('change', handleLocalFileSelect);
+    document.getElementById('localFileInputDrawer').addEventListener('change', handleLocalFileSelect);
+
+    let lastWindowCheckSec = 0;
+    let lastTimeBroadcastMs = 0;
+    cinemaVideo.addEventListener('timeupdate', () => {
+      if (!isHostingCinema) return;
+      const now = cinemaVideo.currentTime;
+
+      if (!isDraggingSlider && isFinite(cinemaVideo.duration)) {
+        seekSlider.max = cinemaVideo.duration;
+        seekSlider.value = now;
+        currentTimeLabel.textContent = formatTime(now);
+        durationLabel.textContent = formatTime(cinemaVideo.duration);
+      }
+
+      if (Date.now() - lastTimeBroadcastMs >= 1000) {
+        lastTimeBroadcastMs = Date.now();
+        socket.emit('cinema-time', {
+          currentTime: now,
+          duration: cinemaVideo.duration || 0,
+          paused: cinemaVideo.paused,
+          ended: cinemaVideo.ended
+        });
+      }
+
+      if (usesChunkedAudio && Math.abs(now - lastWindowCheckSec) >= 2) {
+        lastWindowCheckSec = now;
+        ensureAudioWindowForTimestamp(now, false);
+      }
+    });
+
+    cinemaVideo.addEventListener('ended', () => {
+      didVideoEnd = true;
+      playPauseBtn.textContent = '▶ Replay';
+      if (isFinite(cinemaVideo.duration)) {
+        seekSlider.max = cinemaVideo.duration;
+        seekSlider.value = cinemaVideo.duration;
+        currentTimeLabel.textContent = formatTime(cinemaVideo.duration);
+        durationLabel.textContent = formatTime(cinemaVideo.duration);
+      }
+      if (isHostingCinema && usesChunkedAudio && cinemaAudio.src) {
+        cinemaAudio.pause();
+      }
+      socket.emit('cinema-time', {
+        currentTime: cinemaVideo.duration || cinemaVideo.currentTime,
+        duration: cinemaVideo.duration || 0,
+        paused: true,
+        ended: true
+      });
+      socket.emit('cinema-sync', { action: 'ended', currentTime: cinemaVideo.duration || cinemaVideo.currentTime });
+    });
+
+    cinemaVideo.addEventListener('play', async () => {
+      playPauseBtn.textContent = '⏸ Pause';
+      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+
+      if (isHostingCinema && currentCinemaMode === 'file') {
+        const currentVidTrack = localCinemaStream?.getVideoTracks()[0];
+        if (didVideoEnd || !currentVidTrack || currentVidTrack.readyState === 'ended') {
+          didVideoEnd = false;
+          await refreshCinemaCaptureTracks();
+        }
+      }
+
+      if (isHostingCinema && usesChunkedAudio && cinemaAudio.src) {
+        cinemaAudio.currentTime = Math.max(0, cinemaVideo.currentTime - windowStartSec);
+        cinemaAudio.play().catch(() => {});
+      }
+      if (!isRemoteSyncing) {
+        socket.emit('cinema-sync', { action: 'play', currentTime: cinemaVideo.currentTime });
+      }
+    });
+
+    cinemaVideo.addEventListener('pause', () => {
+      if (cinemaVideo.ended) return;
+      playPauseBtn.textContent = '▶ Play';
+      if (isHostingCinema && usesChunkedAudio && cinemaAudio.src) {
+        cinemaAudio.pause();
+      }
+      if (!isRemoteSyncing) {
+        socket.emit('cinema-sync', { action: 'pause', currentTime: cinemaVideo.currentTime });
+      }
+    });
+
+    cinemaVideo.addEventListener('seeked', async () => {
+      if (isHostingCinema && usesChunkedAudio) {
+        const wasPlaying = !cinemaVideo.paused;
+        if (wasPlaying) cinemaVideo.pause();
+        await ensureAudioWindowForTimestamp(cinemaVideo.currentTime, true);
+        if (wasPlaying) {
+          await cinemaVideo.play().catch(() => {});
+          await cinemaAudio.play().catch(() => {});
+        }
+      }
+      if (!isRemoteSyncing) {
+        socket.emit('cinema-sync', { action: 'seek', currentTime: cinemaVideo.currentTime });
+      }
+    });
+
+    // Silently unlock browser autoplay audio on first user click/tap anywhere
+    function unlockAllAudioOnGesture() {
+      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+      const cinemaVol = parseFloat(document.getElementById('cinemaVolume').value);
+      if (isHostingCinema) {
+        if (usesChunkedAudio && cinemaAudio.src) {
+          cinemaAudio.muted = false;
+          cinemaAudio.volume = cinemaVol;
+          if (!cinemaVideo.paused) cinemaAudio.play().catch(() => {});
+        } else {
+          cinemaVideo.muted = false;
+          cinemaVideo.volume = cinemaVol;
+        }
+      } else if (cinemaAudio.srcObject) {
+        cinemaAudio.muted = false;
+        cinemaAudio.volume = cinemaVol;
+        cinemaAudio.play().catch(() => {});
+      }
+      const callVol = parseFloat(document.getElementById('callVolume').value);
+      Object.values(remoteCallVideos).forEach(v => {
+        v.muted = false;
+        v.volume = callVol;
+        v.play().catch(() => {});
+      });
+    }
+    document.addEventListener('pointerdown', unlockAllAudioOnGesture, { once: true });
+
+    async function startScreenShare() {
+      if (!isRoomAuthorized) return;
+      if (!navigator.mediaDevices || typeof navigator.mediaDevices.getDisplayMedia !== 'function') {
+        alert('Screen sharing is only supported on Desktop Chrome/Edge browsers. On mobile, use "Load Local Video".');
+        return;
+      }
+      if (roomActiveHostId || isHostingCinema) {
+        alert('A video is already active in this room. Stop the current movie first before starting Screen Share.');
+        return;
+      }
+      try {
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: { frameRate: { ideal: 30, max: 30 } },
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false
+          },
+          systemAudio: 'include'
+        });
+
+        cleanupLocalCinemaUI();
+        isHostingCinema = true;
+        roomActiveHostId = socket.id;
+        currentCinemaMode = 'screen';
+        localCinemaStream = screenStream;
+
+        cinemaVideo.src = '';
+        cinemaVideo.srcObject = screenStream;
+        cinemaVideo.muted = true;
+        stagePlaceholder.classList.add('hidden');
+        stopStreamBtn.classList.remove('hidden');
+        await cinemaVideo.play();
+
+        broadcastCinemaStream('screen');
+
+        screenStream.getVideoTracks()[0].onended = () => {
+          socket.emit('cinema-status', { active: false });
+        };
+      } catch (err) {
+        console.warn('Screen share cancelled:', err);
+      }
+    }
+
+    document.getElementById('shareScreenBtn').addEventListener('click', startScreenShare);
+    document.getElementById('shareScreenBtnBar').addEventListener('click', startScreenShare);
+
+    function broadcastCinemaStream(mode) {
+      socket.emit('cinema-status', { active: true, mode });
+      knownPeers.forEach(peerId => {
+        createPeer(peerId, 'cinema', true);
+      });
+    }
+
+    async function refreshCinemaCaptureTracks() {
+      if (!isHostingCinema || currentCinemaMode !== 'file') return;
+
+      const freshCapture = cinemaVideo.captureStream
+        ? cinemaVideo.captureStream()
+        : cinemaVideo.mozCaptureStream();
+
+      const freshVideoTrack = freshCapture.getVideoTracks()[0];
+      if (!freshVideoTrack) return;
+
+      const tracksToUse = [freshVideoTrack];
+      if (usesChunkedAudio) {
+        const webAudioTrack = getCapturedAudioTrackFromElement();
+        if (webAudioTrack) tracksToUse.push(webAudioTrack);
+      } else {
+        const freshAudioTrack = freshCapture.getAudioTracks()[0];
+        if (freshAudioTrack) tracksToUse.push(freshAudioTrack);
+      }
+
+      localCinemaStream = new MediaStream(tracksToUse);
+
+      const peerIds = Array.from(knownPeers);
+      for (const peerId of peerIds) {
+        const pc = cinemaPeers[peerId];
+        if (pc && pc.connectionState === 'connected') {
+          const senders = pc.getSenders();
+          const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+          const audioSender = senders.find(s => s.track && s.track.kind === 'audio');
+          if (videoSender && freshVideoTrack) {
+            await videoSender.replaceTrack(freshVideoTrack).catch(() => {});
+          }
+          const newAudio = localCinemaStream.getAudioTracks()[0];
+          if (audioSender && newAudio) {
+            await audioSender.replaceTrack(newAudio).catch(() => {});
+          }
+        } else {
+          createPeer(peerId, 'cinema', true);
+        }
+      }
+    }
+
+    function cleanupLocalCinemaUI() {
+      isHostingCinema = false;
+      didVideoEnd = false;
+      currentCinemaMode = null;
+      activeFileRef = null;
+      usesChunkedAudio = false;
+      windowStartSec = 0;
+      windowEndSec = 0;
+      isExtractingWindow = false;
+      windowJobId++;
+
+      if (localCinemaStream) {
+        localCinemaStream.getTracks().forEach(t => t.stop());
+        localCinemaStream = null;
+      }
+      if (currentObjectUrl) {
+        URL.revokeObjectURL(currentObjectUrl);
+        currentObjectUrl = null;
+      }
+      if (currentAudioObjectUrl) {
+        URL.revokeObjectURL(currentAudioObjectUrl);
+        currentAudioObjectUrl = null;
+      }
+      Object.values(cinemaPeers).forEach(pc => pc.close());
+      for (const k in cinemaPeers) delete cinemaPeers[k];
+
+      cinemaVideo.pause();
+      cinemaVideo.srcObject = null;
+      cinemaVideo.removeAttribute('src');
+      cinemaAudio.pause();
+      cinemaAudio.srcObject = null;
+      cinemaAudio.removeAttribute('src');
+      customPlayerBar.classList.add('hidden');
+      audioEngineBadge.classList.add('hidden');
+
+      stagePlaceholder.classList.remove('hidden');
+      stopStreamBtn.classList.add('hidden');
+    }
+
+    stopStreamBtn.addEventListener('click', () => {
+      socket.emit('cinema-status', { active: false });
+    });
+
+    const cinemaVolumeSlider = document.getElementById('cinemaVolume');
+    const fsCinemaVolumeSlider = document.getElementById('fsCinemaVolume');
+    const fsMovieVolPct = document.getElementById('fsMovieVolPct');
+
+    function applyCinemaVolume(vol) {
+      cinemaVolumeSlider.value = vol;
+      fsCinemaVolumeSlider.value = vol;
+      fsMovieVolPct.textContent = `${Math.round(vol * 100)}%`;
+      if (isHostingCinema && !usesChunkedAudio) {
+        cinemaVideo.muted = false;
+        cinemaVideo.volume = vol;
+      } else {
+        cinemaAudio.muted = false;
+        cinemaAudio.volume = vol;
+      }
+    }
+
+    cinemaVolumeSlider.addEventListener('input', (e) => applyCinemaVolume(parseFloat(e.target.value)));
+    fsCinemaVolumeSlider.addEventListener('input', (e) => applyCinemaVolume(parseFloat(e.target.value)));
+
+    const callVolumeSlider = document.getElementById('callVolume');
+    const fsCallVolumeSlider = document.getElementById('fsCallVolume');
+    const fsCallVolPct = document.getElementById('fsCallVolPct');
+
+    function applyCallVolume(vol) {
+      callVolumeSlider.value = vol;
+      fsCallVolumeSlider.value = vol;
+      fsCallVolPct.textContent = `${Math.round(vol * 100)}%`;
+      Object.values(remoteCallVideos).forEach(videoEl => {
+        videoEl.muted = false;
+        videoEl.volume = vol;
+      });
+    }
+
+    callVolumeSlider.addEventListener('input', (e) => applyCallVolume(parseFloat(e.target.value)));
+    fsCallVolumeSlider.addEventListener('input', (e) => applyCallVolume(parseFloat(e.target.value)));
+
+    const toggleMicBtn = document.getElementById('toggleMicBtn');
+    const toggleCamBtn = document.getElementById('toggleCamBtn');
+
+    toggleMicBtn.addEventListener('click', () => {
+      const audioTrack = localCallStream?.getAudioTracks()[0];
+      if (!audioTrack) return;
+      audioTrack.enabled = !audioTrack.enabled;
+      toggleMicBtn.textContent = audioTrack.enabled ? '🎤 Mic On' : '🔇 Mic Muted';
+      toggleMicBtn.classList.toggle('bg-rose-600', !audioTrack.enabled);
+    });
+
+    toggleCamBtn.addEventListener('click', () => {
+      const videoTrack = localCallStream?.getVideoTracks()[0];
+      if (!videoTrack) return;
+      videoTrack.enabled = !videoTrack.enabled;
+      toggleCamBtn.textContent = videoTrack.enabled ? '📷 Cam On' : '🚫 Cam Off';
+      toggleCamBtn.classList.toggle('bg-rose-600', !videoTrack.enabled);
+    });
+
+    document.getElementById('newRoomBtn').addEventListener('click', () => {
+      const newId = Math.random().toString(36).substring(2, 9);
+      window.location.href = `/room/${newId}`;
+    });
+
+    document.getElementById('copyLinkBtn').addEventListener('click', (e) => {
+      navigator.clipboard.writeText(window.location.href);
+      const original = e.target.textContent;
+      e.target.textContent = '✓ Link Copied!';
+      setTimeout(() => (e.target.textContent = original), 1800);
+    });
+
+    const qrModal = document.getElementById('qrModal');
+    const qrContainer = document.getElementById('qrContainer');
+
+    document.getElementById('qrBtn').addEventListener('click', () => {
+      qrContainer.innerHTML = '';
+      new QRCode(qrContainer, {
+        text: window.location.href,
+        width: 180,
+        height: 180
+      });
+      document.getElementById('qrUrlText').textContent = window.location.href;
+      qrModal.classList.remove('hidden');
+    });
+
+    document.getElementById('closeQrBtn').addEventListener('click', () => {
+      qrModal.classList.add('hidden');
+    });
+  </script>
+</body>
+</html>
+</file>
+
+<file path="public/styles.css">
+/* =========================================================
+   RAMStream — Custom Responsive & Theater Fullscreen Styles
+   ========================================================= */
+
+:root {
+  --bg-app: #060913;
+  --bg-panel: #0f172a;
+  --bg-card: #020617;
+  --border-subtle: #1e293b;
+  --accent-primary: #6366f1;
+  --accent-emerald: #10b981;
+  --accent-danger: #e11d48;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background-color: var(--bg-app);
+  color: #f1f5f9;
+  margin: 0;
+  overflow-x: hidden;
+}
+
+/* Custom sleek scrollbar for Live Video Call stack & Queue list */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.6);
+  border-radius: 9999px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 9999px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+/* Main Workspace Layout (Normal Mode) */
+.workspace-shell {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+  padding: 0.75rem;
+  max-width: 1440px;
+  width: 100%;
+  margin: 0 auto;
+  flex: 1;
+}
+
+@media (min-width: 1024px) {
+  .workspace-shell {
+    grid-template-columns: minmax(0, 1fr) 310px;
+    padding: 1rem;
+  }
+}
+
+/* Video Call Sidebar Card */
+.call-sidebar {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.85rem;
+  padding: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-height: 0;
+}
+
+@media (min-width: 1024px) {
+  .call-sidebar {
+    height: calc(100vh - 84px);
+    position: sticky;
+    top: 1rem;
+  }
+}
+
+/* Top Mic & Camera Control Bar inside Video Call Box */
+.call-top-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  padding-bottom: 0.65rem;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+/* Scrollable Webcam Tiles Container (Never squishes tiles; shows scrollbar for extra peers) */
+.webcam-stack {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: 0.6rem;
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 4px;
+  flex: 1;
+  min-height: 0;
+}
+
+@media (min-width: 1024px) {
+  .webcam-stack {
+    grid-template-columns: 1fr;
+    max-height: none;
+  }
+}
+
+.cam-tile {
+  position: relative;
+  background: #000;
+  border: 1px solid #334155;
+  border-radius: 0.65rem;
+  overflow: hidden;
+  aspect-ratio: 16 / 10;
+  min-height: 112px;
+  width: 100%;
+  flex-shrink: 0;
+}
+
+.cam-tile video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.cam-badge {
+  position: absolute;
+  bottom: 6px;
+  left: 6px;
+  background: rgba(2, 6, 23, 0.78);
+  backdrop-filter: blur(4px);
+  color: #e2e8f0;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+/* Custom Range Sliders (Movie Vol, Call Vol, Seek Bar) */
+input[type="range"].studio-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 5px;
+  background: #1e293b;
+  border-radius: 999px;
+  outline: none;
+  cursor: pointer;
+}
+
+input[type="range"].studio-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #818cf8;
+  border: 2px solid #eef2ff;
+  cursor: pointer;
+  transition: transform 0.12s ease;
+}
+
+input[type="range"].studio-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.18);
+}
+
+input[type="range"].studio-slider.emerald::-webkit-slider-thumb {
+  background: #34d399;
+  border-color: #ecfdf5;
+}
+
+/* Side-Sliding Queue Drawer */
+.queue-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100vh;
+  width: min(320px, 86vw);
+  background: #0b1120;
+  border-left: 1px solid #334155;
+  box-shadow: -12px 0 35px rgba(0, 0, 0, 0.75);
+  z-index: 90;
+  transform: translateX(105%);
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  flex-direction: column;
+  padding: 1rem;
+}
+
+.queue-drawer.open {
+  transform: translateX(0);
+}
+
+.queue-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 85;
+}
+
+/* =========================================================
+   THEATER FULLSCREEN MODE (Left 18% Rail + Right 82% Video)
+   ========================================================= */
+body.theater-fullscreen {
+  overflow: hidden;
+  height: 100vh;
+  width: 100vw;
+}
+
+body.theater-fullscreen #topHeader,
+body.theater-fullscreen #normalSourceBar,
+body.theater-fullscreen #callSidebarHeader {
+  display: none !important;
+}
+
+body.theater-fullscreen .workspace-shell {
+  display: flex;
+  flex-direction: row;
+  padding: 0;
+  margin: 0;
+  max-width: 100vw;
+  width: 100vw;
+  height: 100vh;
+  gap: 0;
+}
+
+/* RIGHT SIDE RAIL (18% width on desktop, compact rail on mobile) */
+body.theater-fullscreen .call-sidebar {
+  order: 2;
+  width: 18%;
+  min-width: 132px;
+  max-width: 280px;
+  height: 100vh;
+  border-radius: 0;
+  border: none;
+  border-left: 1px solid #1e293b;
+  background: #080d1a;
+  padding: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  z-index: 30;
+}
+
+/* Fullscreen Left Rail: Permanent Volume + Queue Icon Block */
+.fs-left-controls {
+  display: none;
+}
+
+body.theater-fullscreen .fs-left-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-bottom: 0.55rem;
+  border-bottom: 1px solid #1e293b;
+}
+
+/* Single-column stacked webcams filling remaining left-rail space */
+body.theater-fullscreen .webcam-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  flex: 1;
+  max-height: none;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+body.theater-fullscreen .cam-tile {
+  flex-shrink: 0;
+  aspect-ratio: 16 / 10;
+  border-radius: 0.5rem;
+}
+
+/* LEFT SIDE STAGE (82% width, 100vh height) */
+body.theater-fullscreen .theater-stage-col {
+  order: 1;
+  width: 82%;
+  flex: 1;
+  height: 100vh;
+  position: relative;
+  background: #000;
+  gap: 0;
+}
+
+body.theater-fullscreen .video-frame-box {
+  width: 100%;
+  height: 100vh;
+  aspect-ratio: auto;
+  border: none;
+  border-radius: 0;
+}
+
+/* Floating Playback Bar at Bottom of Right-Side Video in Fullscreen */
+body.theater-fullscreen #customPlayerBar {
+  position: absolute;
+  bottom: 14px;
+  left: 16px;
+  right: 16px;
+  background: rgba(15, 23, 42, 0.82);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(51, 65, 85, 0.8);
+  z-index: 40;
+  opacity: 0.92;
+  transition: opacity 0.2s ease;
+}
+
+body.theater-fullscreen #customPlayerBar:hover {
+  opacity: 1;
+}
+
+/* Mobile adjustments inside Theater Fullscreen */
+@media (max-width: 768px) {
+  body.theater-fullscreen .call-sidebar {
+    width: 24%;
+    min-width: 112px;
+    padding: 0.4rem;
+    gap: 0.4rem;
+  }
+
+  body.theater-fullscreen .theater-stage-col {
+    width: 76%;
+  }
+
+  body.theater-fullscreen .call-top-controls button {
+    font-size: 10px;
+    padding: 0.35rem 0.25rem;
+  }
+}
+
+/* =========================================================
+   Auto-Hiding Player Bar & Tap-Gesture Feedback Overlays
+   ========================================================= */
+body.theater-fullscreen #customPlayerBar.bar-hidden {
+  opacity: 0 !important;
+  pointer-events: none;
+  transform: translateY(10px);
+}
+
+body.theater-fullscreen #customPlayerBar {
+  transition: opacity 0.28s ease, transform 0.28s ease;
+}
+
+/* Mobile landscape fullscreen: keep left rail compact & crisp */
+@media (max-width: 920px) and (orientation: landscape) {
+  body.theater-fullscreen .call-sidebar {
+    width: 19%;
+    min-width: 128px;
+    padding: 0.45rem;
+    gap: 0.4rem;
+  }
+
+  body.theater-fullscreen .theater-stage-col {
+    width: 81%;
+  }
+
+  body.theater-fullscreen .call-top-controls button {
+    font-size: 11px;
+    padding: 0.35rem 0.25rem;
+  }
+}
+
+/* Double-tap +/- 10s visual ripple pill */
+.seek-toast-pill {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(6px);
+  border: 1px solid rgba(99, 102, 241, 0.6);
+  color: #f8fafc;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 0.55rem 1rem;
+  border-radius: 9999px;
+  pointer-events: none;
+  z-index: 35;
+  animation: popFade 0.65s ease forwards;
+}
+
+.seek-toast-pill.left {
+  left: 16%;
+}
+
+.seek-toast-pill.right {
+  right: 16%;
+}
+
+@keyframes popFade {
+  0% {
+    opacity: 0;
+    transform: translateY(-50%) scale(0.88);
+  }
+  25% {
+    opacity: 1;
+    transform: translateY(-50%) scale(1);
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-50%) scale(0.96);
+  }
+}
+
+/* =========================================================
+   Room Chat & Clickable Link Box (Normal + Fullscreen Rail)
+   ========================================================= */
+.room-chat-box {
+  background: #0b1120;
+  border: 1px solid #1e293b;
+  border-radius: 0.75rem;
+  padding: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  flex-shrink: 0;
+  margin-top: auto;
+}
+
+.chat-messages-feed {
+  max-height: 110px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.chat-msg-bubble {
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid #1e293b;
+  border-radius: 0.5rem;
+  padding: 0.3rem 0.5rem;
+  color: #e2e8f0;
+  word-break: break-word;
+}
+
+.chat-msg-link {
+  color: #818cf8;
+  text-decoration: underline;
+  word-break: break-all;
+}
+
+.chat-msg-link:hover {
+  color: #a5b4fc;
+}
+
+/* In Theater Fullscreen: Float Chat Box at Bottom of Right-Side Camera Rail */
+body.theater-fullscreen .call-sidebar {
+  position: relative;
+}
+
+body.theater-fullscreen .webcam-stack {
+  padding-bottom: 132px; /* Leave room so bottom webcam isn't hidden behind floating chat */
+}
+
+body.theater-fullscreen .room-chat-box {
+  position: absolute;
+  bottom: 6px;
+  left: 6px;
+  right: 6px;
+  z-index: 45;
+  background: rgba(8, 13, 26, 0.86);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(51, 65, 85, 0.85);
+  border-radius: 0.65rem;
+  padding: 0.4rem;
+  box-shadow: 0 -6px 20px rgba(0, 0, 0, 0.65);
+}
+
+body.theater-fullscreen .chat-messages-feed {
+  max-height: 74px;
+  font-size: 10px;
+}
+
+body.theater-fullscreen #chatInput {
+  font-size: 10px;
+  padding: 0.3rem 0.45rem;
+}
+
+body.theater-fullscreen #chatSendBtn {
+  font-size: 10px;
+  padding: 0.3rem 0.5rem;
+}
+
+@media (max-width: 768px) {
+  body.theater-fullscreen .webcam-stack {
+    padding-bottom: 110px;
+  }
+
+  body.theater-fullscreen .chat-messages-feed {
+    max-height: 56px;
+  }
+}
+</file>
+
+<file path="package.json">
+{
+  "name": "zero-storage-watch-party",
+  "version": "1.0.0",
+  "description": "RAM-only P2P movie streaming, screen share, and video call watch party",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}
+</file>
+
+<file path="server.js">
+const express = require('express');
+const http = require('http');
+const crypto = require('crypto');
+const { Server } = require('socket.io');
+const path = require('path');
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  maxHttpBufferSize: 1e5 // 100 KB max signaling payload to prevent memory DoS
+});
+
+// Required headers so FFmpeg.wasm can decode AC3/DTS audio directly in browser RAM
+app.use((req, res, next) => {
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
+  next();
+});
+
+app.use(express.static(path.join(__dirname, 'public')));
+
+app.get('/room/:roomId', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Ephemeral in-memory room state (wiped automatically when room becomes empty)
+const roomStates = new Map();
+
+function getRoomState(roomId) {
+  if (!roomStates.has(roomId)) {
+    roomStates.set(roomId, {
+      passwordHash: null,
+      passwordSalt: null,
+      activeHostId: null,
+      queue: [],
+      messages: [] // [{ msgId, text, senderId, senderName }]
+    });
+  }
+  return roomStates.get(roomId);
+}
+
+function hashPassword(plain, salt) {
+  return crypto.scryptSync(String(plain), salt, 64).toString('hex');
+}
+
+function verifyPassword(plain, state) {
+  if (!state.passwordHash || !state.passwordSalt) return true;
+  if (typeof plain !== 'string' || plain.length === 0 || plain.length > 128) return false;
+  const candidate = Buffer.from(hashPassword(plain, state.passwordSalt), 'hex');
+  const stored = Buffer.from(state.passwordHash, 'hex');
+  return candidate.length === stored.length && crypto.timingSafeEqual(candidate, stored);
+}
+
+function sanitizeRoomId(raw) {
+  if (typeof raw !== 'string') return null;
+  const cleaned = raw.trim().replace(/[^a-zA-Z0-9_-]/g, '');
+  return cleaned.length >= 3 && cleaned.length <= 32 ? cleaned : null;
+}
+
+function sanitizeHttpUrl(raw) {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0 || trimmed.length > 2048) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    return parsed.href;
+  } catch {
+    return null;
+  }
+}
+
+function isAuthorizedInRoom(socket, targetId = null) {
+  if (!socket.authorizedRoomId) return false;
+  const room = io.sockets.adapter.rooms.get(socket.authorizedRoomId);
+  if (!room || !room.has(socket.id)) return false;
+  if (targetId !== null && !room.has(targetId)) return false;
+  return true;
+}
+
+io.on('connection', (socket) => {
+  socket.authorizedRoomId = null;
+
+  // Join room with optional password verification
+  socket.on('join-room', (payload) => {
+    const rawRoomId = typeof payload === 'string' ? payload : payload?.roomId;
+    const providedPassword = typeof payload === 'object' ? payload?.password : '';
+    const roomId = sanitizeRoomId(rawRoomId);
+
+    if (!roomId) {
+      socket.emit('join-error', { code: 'INVALID_ROOM', message: 'Invalid room ID.' });
+      return;
+    }
+
+    const state = getRoomState(roomId);
+
+    // Block unauthorized access if room is password-protected
+    if (state.passwordHash) {
+      if (!providedPassword) {
+        socket.emit('password-required', { roomId });
+        return;
+      }
+      if (!verifyPassword(providedPassword, state)) {
+        socket.emit('password-invalid', { roomId, message: 'Incorrect room password.' });
+        return;
+      }
+    }
+
+    // Leave any previous room cleanly
+    if (socket.authorizedRoomId && socket.authorizedRoomId !== roomId) {
+      socket.leave(socket.authorizedRoomId);
+    }
+
+    const room = io.sockets.adapter.rooms.get(roomId);
+    const existingUsers = room ? Array.from(room) : [];
+
+    socket.join(roomId);
+    socket.authorizedRoomId = roomId;
+
+    socket.emit('join-success', {
+      roomId,
+      isPasswordLocked: Boolean(state.passwordHash)
+    });
+    socket.emit('all-users', existingUsers);
+    socket.emit('queue-updated', {
+      activeHostId: state.activeHostId,
+      queue: state.queue
+    });
+    socket.emit('chat-updated', state.messages);
+    socket.to(roomId).emit('user-joined', socket.id);
+  });
+
+  // One-time room password setup (cannot be viewed, changed, or reset once set)
+  socket.on('set-room-password', ({ password }) => {
+    if (!isAuthorizedInRoom(socket)) return;
+    const state = getRoomState(socket.authorizedRoomId);
+
+    if (state.passwordHash) {
+      socket.emit('password-set-result', {
+        ok: false,
+        message: 'Password is already locked for this room and cannot be changed.'
+      });
+      return;
+    }
+
+    if (typeof password !== 'string' || password.trim().length < 3 || password.trim().length > 64) {
+      socket.emit('password-set-result', {
+        ok: false,
+        message: 'Password must be between 3 and 64 characters.'
+      });
+      return;
+    }
+
+    const salt = crypto.randomBytes(16).toString('hex');
+    state.passwordSalt = salt;
+    state.passwordHash = hashPassword(password.trim(), salt);
+
+    // Notify everyone in room that password is now permanently locked (never send password back)
+    io.to(socket.authorizedRoomId).emit('room-password-locked');
+  });
+
+  // Share clickable HTTP/HTTPS link with room members
+  // Send ephemeral chat message (plain text and/or URLs) to authorized room members
+  socket.on('chat-message', ({ text }) => {
+    if (!isAuthorizedInRoom(socket)) return;
+    if (typeof text !== 'string') return;
+    const cleanText = text.trim().slice(0, 500);
+    if (!cleanText) return;
+
+    const state = getRoomState(socket.authorizedRoomId);
+    state.messages.push({
+      msgId: crypto.randomBytes(4).toString('hex'),
+      text: cleanText,
+      senderId: socket.id,
+      senderName: `User (${socket.id.slice(0, 4)})`
+    });
+
+    if (state.messages.length > 50) {
+      state.messages.shift();
+    }
+
+    io.to(socket.authorizedRoomId).emit('chat-updated', state.messages);
+  });
+
+  socket.on('request-cinema', () => {
+    if (!isAuthorizedInRoom(socket)) return;
+    socket.to(socket.authorizedRoomId).emit('request-cinema', { requesterId: socket.id });
+  });
+
+  socket.on('queue-add', (item) => {
+    if (!isAuthorizedInRoom(socket) || !item) return;
+    const state = getRoomState(socket.authorizedRoomId);
+    const safeTitle = typeof item.title === 'string'
+      ? item.title.trim().slice(0, 180)
+      : 'Untitled Video';
+
+    state.queue.push({
+      queueId: String(item.queueId || '').slice(0, 24),
+      title: safeTitle || 'Untitled Video',
+      type: item.type === 'screen' ? 'screen' : 'file',
+      ownerId: socket.id,
+      ownerName: `User (${socket.id.slice(0, 4)})`
+    });
+    io.to(socket.authorizedRoomId).emit('queue-updated', {
+      activeHostId: state.activeHostId,
+      queue: state.queue
+    });
+  });
+
+  socket.on('queue-remove', ({ queueId }) => {
+    if (!isAuthorizedInRoom(socket)) return;
+    const state = getRoomState(socket.authorizedRoomId);
+    state.queue = state.queue.filter(q => q.queueId !== queueId);
+    io.to(socket.authorizedRoomId).emit('queue-updated', {
+      activeHostId: state.activeHostId,
+      queue: state.queue
+    });
+  });
+
+  socket.on('queue-play-now', ({ queueId }) => {
+    if (!isAuthorizedInRoom(socket)) return;
+    const state = getRoomState(socket.authorizedRoomId);
+    const idx = state.queue.findIndex(q => q.queueId === queueId);
+    if (idx === -1) return;
+
+    const [selectedItem] = state.queue.splice(idx, 1);
+    state.activeHostId = selectedItem.ownerId;
+
+    io.to(socket.authorizedRoomId).emit('cinema-status', { active: false });
+    io.to(socket.authorizedRoomId).emit('queue-updated', {
+      activeHostId: state.activeHostId,
+      queue: state.queue
+    });
+    io.to(selectedItem.ownerId).emit('start-queued-item', {
+      queueId: selectedItem.queueId
+    });
+  });
+
+  // Strict same-room WebRTC signaling relay (prevents cross-room hijacking)
+  socket.on('offer', (payload) => {
+    if (!payload || !isAuthorizedInRoom(socket, payload.target)) return;
+    io.to(payload.target).emit('offer', {
+      sdp: payload.sdp,
+      caller: socket.id,
+      mediaType: payload.mediaType
+    });
+  });
+
+  socket.on('answer', (payload) => {
+    if (!payload || !isAuthorizedInRoom(socket, payload.target)) return;
+    io.to(payload.target).emit('answer', {
+      sdp: payload.sdp,
+      callee: socket.id,
+      mediaType: payload.mediaType
+    });
+  });
+
+  socket.on('ice-candidate', (payload) => {
+    if (!payload || !isAuthorizedInRoom(socket, payload.target)) return;
+    io.to(payload.target).emit('ice-candidate', {
+      candidate: payload.candidate,
+      from: socket.id,
+      mediaType: payload.mediaType
+    });
+  });
+
+  socket.on('cinema-status', (payload) => {
+    if (!isAuthorizedInRoom(socket) || !payload) return;
+    const state = getRoomState(socket.authorizedRoomId);
+
+    if (payload.active) {
+      // Only claim host if no one else is currently active
+      if (state.activeHostId && state.activeHostId !== socket.id) return;
+      state.activeHostId = socket.id;
+    } else {
+      state.activeHostId = null;
+    }
+
+    io.to(socket.authorizedRoomId).emit('cinema-status', {
+      senderId: socket.id,
+      active: Boolean(payload.active),
+      mode: payload.mode
+    });
+    io.to(socket.authorizedRoomId).emit('queue-updated', {
+      activeHostId: state.activeHostId,
+      queue: state.queue
+    });
+  });
+
+  socket.on('cinema-time', (payload) => {
+    if (!isAuthorizedInRoom(socket) || !payload) return;
+    const state = getRoomState(socket.authorizedRoomId);
+    if (state.activeHostId !== socket.id) return;
+
+    socket.to(socket.authorizedRoomId).emit('cinema-time', {
+      currentTime: payload.currentTime,
+      duration: payload.duration,
+      paused: payload.paused,
+      ended: payload.ended
+    });
+  });
+
+  socket.on('cinema-sync', (payload) => {
+    if (!isAuthorizedInRoom(socket) || !payload) return;
+    socket.to(socket.authorizedRoomId).emit('cinema-sync', {
+      action: payload.action,
+      currentTime: payload.currentTime
+    });
+  });
+
+  socket.on('disconnect', () => {
+    const roomId = socket.authorizedRoomId;
+    if (!roomId) return;
+
+    const state = roomStates.get(roomId);
+    if (state) {
+      state.queue = state.queue.filter(q => q.ownerId !== socket.id);
+      if (state.activeHostId === socket.id) {
+        state.activeHostId = null;
+        io.to(roomId).emit('cinema-status', { active: false });
+      }
+      io.to(roomId).emit('queue-updated', {
+        activeHostId: state.activeHostId,
+        queue: state.queue
+      });
+
+      const room = io.sockets.adapter.rooms.get(roomId);
+      if (!room || room.size === 0) {
+        roomStates.delete(roomId); // Wipe password hash, queue, and links from RAM
+      }
+    }
+    socket.to(roomId).emit('user-left', socket.id);
+  });
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`Watch Party Server running at http://localhost:${PORT}`);
+});
+</file>
+
+</files>
