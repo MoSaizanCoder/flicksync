@@ -801,17 +801,20 @@
           stopStreamBtn.classList.remove('hidden');
           customPlayerBar.classList.remove('hidden');
 
-          cinemaVideo.src = '';
-          cinemaVideo.srcObject = remoteStream;
-          cinemaVideo.muted = true;
-          cinemaVideo.play().catch(() => {});
+          if (cinemaVideo.srcObject !== remoteStream) {
+            cinemaVideo.removeAttribute('src');
+            cinemaVideo.srcObject = remoteStream;
+            cinemaVideo.muted = true;
+            cinemaVideo.play().catch(() => {});
+          }
 
-          cinemaAudio.src = '';
-          cinemaAudio.srcObject = remoteStream;
-          cinemaAudio.muted = false;
-          cinemaAudio.volume = parseFloat(document.getElementById('cinemaVolume').value);
-          cinemaAudio.play().catch(() => {});
-          
+          if (cinemaAudio.srcObject !== remoteStream) {
+            cinemaAudio.removeAttribute('src');
+            cinemaAudio.srcObject = remoteStream;
+            cinemaAudio.muted = false;
+            cinemaAudio.volume = parseFloat(document.getElementById('cinemaVolume').value);
+            cinemaAudio.play().catch(() => {});
+          }
         }
       };
 
@@ -1145,9 +1148,23 @@
         const { FFmpeg } = window.FFmpegWASM;
         if (!ffmpegInstance) {
           ffmpegInstance = new FFmpeg();
+          const toSameOriginBlob = async (url, mime) => {
+            const resp = await fetch(url);
+            if (!resp.ok) throw new Error(`Failed to fetch ${url}`);
+            const buf = await resp.arrayBuffer();
+            return URL.createObjectURL(new Blob([buf], { type: mime }));
+          };
+          const coreBlobURL = await toSameOriginBlob(
+            'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
+            'text/javascript'
+          );
+          const wasmBlobURL = await toSameOriginBlob(
+            'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
+            'application/wasm'
+          );
           await ffmpegInstance.load({
-            coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
-            wasmURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm'
+            coreURL: coreBlobURL,
+            wasmURL: wasmBlobURL
           });
         }
 
@@ -1280,9 +1297,39 @@
         playPauseBtn.textContent = '⏸ Pause';
 
         setTimeout(async () => {
-          const videoCapture = cinemaVideo.captureStream
-            ? cinemaVideo.captureStream()
-            : cinemaVideo.mozCaptureStream();
+          const isMobileDevice = /Android|iPhone|iPad/i.test(navigator.userAgent);
+          let videoCapture;
+
+          if (isMobileDevice) {
+            // Android Chrome hardware <video>.captureStream() often sends black frames over WebRTC;
+            // drawing frames onto an offscreen canvas guarantees real video frames reach the laptop.
+            const relayCanvas = document.createElement('canvas');
+            const scale = Math.min(1, 1280 / (cinemaVideo.videoWidth || 1280));
+            relayCanvas.width = Math.round((cinemaVideo.videoWidth || 1280) * scale);
+            relayCanvas.height = Math.round((cinemaVideo.videoHeight || 720) * scale);
+            const ctx = relayCanvas.getContext('2d');
+
+            const drawLoop = () => {
+              if (!isHostingCinema || currentCinemaMode !== 'file') return;
+              if (!cinemaVideo.paused && !cinemaVideo.ended) {
+                ctx.drawImage(cinemaVideo, 0, 0, relayCanvas.width, relayCanvas.height);
+              }
+              requestAnimationFrame(drawLoop);
+            };
+            requestAnimationFrame(drawLoop);
+
+            videoCapture = relayCanvas.captureStream(24);
+            const nativeCapture = cinemaVideo.captureStream
+              ? cinemaVideo.captureStream()
+              : (cinemaVideo.mozCaptureStream ? cinemaVideo.mozCaptureStream() : null);
+            if (nativeCapture && nativeCapture.getAudioTracks().length > 0) {
+              videoCapture.addTrack(nativeCapture.getAudioTracks()[0]);
+            }
+          } else {
+            videoCapture = cinemaVideo.captureStream
+              ? cinemaVideo.captureStream(30)
+              : cinemaVideo.mozCaptureStream(30);
+          }
 
           localCinemaStream = videoCapture;
           broadcastCinemaStream('file');
@@ -1303,7 +1350,7 @@
               });
             }
           }
-        }, 150);
+        }, 200);
       };
     }
 
