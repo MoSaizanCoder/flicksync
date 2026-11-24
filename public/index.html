@@ -287,6 +287,20 @@
     </div>
   </div>
 
+  <!-- Audio Track Selection Modal (Shown before loading when video has 2+ audio tracks) -->
+  <div id="audioTrackModal" class="hidden fixed inset-0 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-sm w-full shadow-2xl">
+      <h3 class="text-base font-bold text-slate-100 mb-1">🎧 Select Audio Track</h3>
+      <p id="audioTrackSubtitle" class="text-xs text-slate-400 mb-4">
+        This file has multiple audio tracks. Choose which one to load and stream:
+      </p>
+      <div id="audioTrackOptionsList" class="flex flex-col gap-2 max-h-60 overflow-y-auto custom-scrollbar mb-4"></div>
+      <button type="button" id="cancelAudioTrackBtn" class="w-full bg-slate-800 hover:bg-slate-700 text-xs font-medium py-2.5 rounded-lg border border-slate-700">
+        Cancel
+      </button>
+    </div>
+  </div>
+
   <!-- QR Code Modal -->
   <div id="qrModal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
     <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-xs w-full text-center shadow-2xl">
@@ -369,6 +383,8 @@
     let windowEndSec = 0;
     let isExtractingWindow = false;
     let windowJobId = 0;
+    let selectedAudioStreamIndex = 0;
+    let ffmpegMutex = Promise.resolve();
 
     const cinemaVideo = document.getElementById('cinemaVideo');
     const cinemaAudio = document.getElementById('cinemaAudio');
@@ -815,17 +831,17 @@
           if (cinemaVideo.srcObject !== remoteStream) {
             cinemaVideo.removeAttribute('src');
             cinemaVideo.srcObject = remoteStream;
-            cinemaVideo.muted = true;
-            cinemaVideo.play().catch(() => {});
           }
+          cinemaVideo.muted = true;
+          cinemaVideo.play().catch(() => {});
 
           if (cinemaAudio.srcObject !== remoteStream) {
             cinemaAudio.removeAttribute('src');
             cinemaAudio.srcObject = remoteStream;
-            cinemaAudio.muted = false;
-            cinemaAudio.volume = parseFloat(document.getElementById('cinemaVolume').value);
-            cinemaAudio.play().catch(() => {});
           }
+          cinemaAudio.muted = false;
+          cinemaAudio.volume = parseFloat(document.getElementById('cinemaVolume').value);
+          cinemaAudio.play().catch(() => {});
         }
       };
 
@@ -1128,124 +1144,242 @@
       }
     });
 
-    // Sliding-Window Audio Extraction
+    // Helper: Ensure FFmpeg.wasm is loaded once using same-origin Blob URLs
+    async function ensureFFmpegLoaded() {
+      if (!window.FFmpegWASM || !window.FFmpegWASM.FFmpeg) {
+        throw new Error('FFmpegWASM script not loaded');
+      }
+      const { FFmpeg } = window.FFmpegWASM;
+      if (!ffmpegInstance) {
+        ffmpegInstance = new FFmpeg();
+        const toSameOriginBlob = async (url, mime) => {
+          const resp = await fetch(url);
+          if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${url}`);
+          const buf = await resp.arrayBuffer();
+          return URL.createObjectURL(new Blob([buf], { type: mime }));
+        };
+        const workerBlobURL = await toSameOriginBlob(
+          'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js',
+          'text/javascript'
+        );
+        const coreBlobURL = await toSameOriginBlob(
+          'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
+          'text/javascript'
+        );
+        const wasmBlobURL = await toSameOriginBlob(
+          'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
+          'application/wasm'
+        );
+        await ffmpegInstance.load({
+          classWorkerURL: workerBlobURL,
+          coreURL: coreBlobURL,
+          wasmURL: wasmBlobURL
+        });
+      }
+      return ffmpegInstance;
+    }
+
+    // Probe all audio streams inside a file before starting playback
+    function probeFileAudioTracks(file) {
+      const runProbe = async () => {
+        audioEngineBadge.classList.remove('hidden');
+        audioEngineText.textContent = 'Scanning audio tracks...';
+        try {
+          const ff = await ensureFFmpegLoaded();
+          const logs = [];
+          const logHandler = ({ message }) => logs.push(message);
+          ff.on('log', logHandler);
+
+          try { await ff.unmount('/work'); } catch (_) {}
+          try { await ff.createDir('/work'); } catch (_) {}
+          await ff.mount('WORKERFS', { files: [file] }, '/work');
+
+          // Running -i without output prints stream metadata and exits cleanly
+          await ff.exec(['-i', `/work/${file.name}`]).catch(() => {});
+          ff.off('log', logHandler);
+          try { await ff.unmount('/work'); } catch (_) {}
+
+          const tracks = [];
+          const streamRegex = /Stream #0:(\d+)(?:\(([^)]+)\))?: Audio:\s*([^,\r\n]+)(?:,\s*([^,\r\n]+))?(?:,\s*([^,\r\n]+))?/i;
+
+          for (const line of logs) {
+            const match = line.match(streamRegex);
+            if (match) {
+              const lang = match[2] && match[2] !== 'und' ? match[2].toUpperCase() : null;
+              const codec = (match[3] || 'Audio').split(' ')[0].toUpperCase();
+              const channels = match[5] ? match[5].trim() : '';
+              const trackNum = tracks.length + 1;
+              const labelParts = [`Track ${trackNum}`];
+              if (lang) labelParts.push(lang);
+              labelParts.push(`(${codec}${channels ? ', ' + channels : ''})`);
+
+              tracks.push({
+                audioIndex: tracks.length, // 0-based index for -map 0:a:<audioIndex>
+                codec: codec.toLowerCase(),
+                label: labelParts.join(' ')
+              });
+            }
+          }
+          audioEngineBadge.classList.add('hidden');
+          return tracks;
+        } catch (err) {
+          console.warn('Audio track probe skipped:', err);
+          audioEngineBadge.classList.add('hidden');
+          return [];
+        }
+      };
+
+      const p = ffmpegMutex.then(runProbe, runProbe);
+      ffmpegMutex = p.catch(() => {});
+      return p;
+    }
+
+    // Show modal when 2+ audio tracks exist; resolves with chosen 0-based audioIndex (or null if cancelled)
+    const audioTrackModal = document.getElementById('audioTrackModal');
+    const audioTrackOptionsList = document.getElementById('audioTrackOptionsList');
+    const cancelAudioTrackBtn = document.getElementById('cancelAudioTrackBtn');
+
+    function promptUserForAudioTrack(tracks) {
+      return new Promise((resolve) => {
+        audioTrackOptionsList.innerHTML = '';
+
+        tracks.forEach((track) => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'w-full text-left bg-slate-950 hover:bg-indigo-600/30 border border-slate-700 hover:border-indigo-500 rounded-xl px-3.5 py-2.5 text-xs font-medium text-slate-100 transition flex items-center justify-between';
+
+          const nameSpan = document.createElement('span');
+          nameSpan.textContent = `🔊 ${track.label}`;
+
+          const badgeSpan = document.createElement('span');
+          badgeSpan.className = 'text-[10px] text-indigo-300 font-semibold';
+          badgeSpan.textContent = 'Select →';
+
+          btn.appendChild(nameSpan);
+          btn.appendChild(badgeSpan);
+
+          btn.onclick = () => {
+            audioTrackModal.classList.add('hidden');
+            resolve(track.audioIndex);
+          };
+          audioTrackOptionsList.appendChild(btn);
+        });
+
+        cancelAudioTrackBtn.onclick = () => {
+          audioTrackModal.classList.add('hidden');
+          resolve(null);
+        };
+
+        audioTrackModal.classList.remove('hidden');
+      });
+    }
+
+    // Serialized Sliding-Window Audio Extraction (Uses user-chosen selectedAudioStreamIndex)
     async function loadAudioWindow(targetSec, isSeekJump = false) {
       if (!activeFileRef) return false;
       const myJob = ++windowJobId;
       isExtractingWindow = true;
 
-      const sliceStart = Math.max(0, Math.floor(targetSec - (isSeekJump ? 10 : 0)));
+      const sliceStart = Math.max(0, Math.floor(targetSec - (isSeekJump ? 5 : 0)));
       const sliceDuration = WINDOW_DURATION_SEC;
 
       audioEngineBadge.classList.remove('hidden');
-      audioEngineText.textContent = `Buffering audio ${formatTime(sliceStart)} → ${formatTime(sliceStart + sliceDuration)}...`;
+      audioEngineText.textContent = `Buffering audio (Track ${selectedAudioStreamIndex + 1}) ${formatTime(sliceStart)} → ${formatTime(sliceStart + sliceDuration)}...`;
 
-      try {
-        if (!window.FFmpegWASM || !window.FFmpegWASM.FFmpeg) {
-          throw new Error('FFmpegWASM script not loaded');
-        }
-        const { FFmpeg } = window.FFmpegWASM;
-        if (!ffmpegInstance) {
-          ffmpegInstance = new FFmpeg();
-          const toSameOriginBlob = async (url, mime) => {
-            const resp = await fetch(url);
-            if (!resp.ok) throw new Error(`Failed to fetch ${url}`);
-            const buf = await resp.arrayBuffer();
-            return URL.createObjectURL(new Blob([buf], { type: mime }));
-          };
-          const workerBlobURL = await toSameOriginBlob(
-            'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js',
-            'text/javascript'
-          );
-          const coreBlobURL = await toSameOriginBlob(
-            'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
-            'text/javascript'
-          );
-          const wasmBlobURL = await toSameOriginBlob(
-            'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
-            'application/wasm'
-          );
-          await ffmpegInstance.load({
-            classWorkerURL: workerBlobURL,
-            coreURL: coreBlobURL,
-            wasmURL: wasmBlobURL
-          });
-        }
+      const runJob = async () => {
+        if (myJob !== windowJobId || !activeFileRef) return false;
 
-        if (myJob !== windowJobId) return false;
+        try {
+          const ff = await ensureFFmpegLoaded();
+          if (myJob !== windowJobId) return false;
 
-        try { await ffmpegInstance.unmount('/work'); } catch (_) {}
-        try { await ffmpegInstance.createDir('/work'); } catch (_) {}
-        await ffmpegInstance.mount('WORKERFS', { files: [activeFileRef] }, '/work');
+          try { await ff.unmount('/work'); } catch (_) {}
+          try { await ff.createDir('/work'); } catch (_) {}
+          await ff.mount('WORKERFS', { files: [activeFileRef] }, '/work');
 
-        const inputPath = `/work/${activeFileRef.name}`;
-        const chunkOut = `chunk_${myJob}.m4a`;
+          const inputPath = `/work/${activeFileRef.name}`;
+          const chunkOut = `chunk_${myJob}.m4a`;
 
-        await ffmpegInstance.exec([
-          '-ss', String(sliceStart),
-          '-i', inputPath,
-          '-t', String(sliceDuration),
-          '-vn',
-          '-c:a', 'aac',
-          '-b:a', '128k',
-          '-ac', '2',
-          chunkOut
-        ]);
+          const exitCode = await ff.exec([
+            '-ss', String(sliceStart),
+            '-i', inputPath,
+            '-t', String(sliceDuration),
+            '-map', `0:a:${selectedAudioStreamIndex}`,
+            '-vn',
+            '-sn',
+            '-dn',
+            '-c:a', 'aac',
+            '-b:a', '128k',
+            '-ac', '2',
+            '-ar', '48000',
+            chunkOut
+          ]);
 
-        if (myJob !== windowJobId) {
-          await ffmpegInstance.deleteFile(chunkOut).catch(() => {});
+          if (exitCode !== 0 || myJob !== windowJobId) {
+            await ff.deleteFile(chunkOut).catch(() => {});
+            try { await ff.unmount('/work'); } catch (_) {}
+            if (exitCode !== 0) throw new Error(`FFmpeg exited with code ${exitCode}`);
+            return false;
+          }
+
+          const bytes = await ff.readFile(chunkOut);
+          await ff.deleteFile(chunkOut).catch(() => {});
+          try { await ff.unmount('/work'); } catch (_) {}
+
+          if (!bytes || bytes.byteLength === 0) {
+            throw new Error('Decoded audio chunk was empty');
+          }
+
+          if (currentAudioObjectUrl) URL.revokeObjectURL(currentAudioObjectUrl);
+          const blob = new Blob([bytes.buffer], { type: 'audio/mp4' });
+          currentAudioObjectUrl = URL.createObjectURL(blob);
+
+          windowStartSec = sliceStart;
+          windowEndSec = sliceStart + sliceDuration;
+
+          cinemaAudio.srcObject = null;
+          cinemaAudio.src = currentAudioObjectUrl;
+          cinemaAudio.muted = false;
+          cinemaAudio.volume = parseFloat(document.getElementById('cinemaVolume').value);
+
+          const relativeOffset = Math.max(0, cinemaVideo.currentTime - windowStartSec);
+          cinemaAudio.currentTime = relativeOffset;
+
+          if (!cinemaVideo.paused) {
+            await cinemaAudio.play().catch(() => {});
+          }
+
+          audioEngineBadge.classList.add('hidden');
+          return true;
+        } catch (err) {
+          console.error('Audio window decode error:', err);
+          audioEngineText.textContent = `⚠️ Audio decode error: ${err.message || 'Unsupported codec'}`;
+          setTimeout(() => audioEngineBadge.classList.add('hidden'), 5000);
           return false;
+        } finally {
+          if (myJob === windowJobId) {
+            isExtractingWindow = false;
+          }
         }
+      };
 
-        const bytes = await ffmpegInstance.readFile(chunkOut);
-        await ffmpegInstance.deleteFile(chunkOut).catch(() => {});
-        try { await ffmpegInstance.unmount('/work'); } catch (_) {}
-
-        if (currentAudioObjectUrl) URL.revokeObjectURL(currentAudioObjectUrl);
-        const blob = new Blob([bytes.buffer], { type: 'audio/mp4' });
-        currentAudioObjectUrl = URL.createObjectURL(blob);
-
-        windowStartSec = sliceStart;
-        windowEndSec = sliceStart + sliceDuration;
-
-        cinemaAudio.srcObject = null;
-        cinemaAudio.src = currentAudioObjectUrl;
-        cinemaAudio.muted = false;
-        cinemaAudio.volume = parseFloat(document.getElementById('cinemaVolume').value);
-
-        const relativeOffset = Math.max(0, cinemaVideo.currentTime - windowStartSec);
-        cinemaAudio.currentTime = relativeOffset;
-
-        if (!cinemaVideo.paused) {
-          await cinemaAudio.play().catch(() => {});
-        }
-
-        audioEngineBadge.classList.add('hidden');
-        return true;
-      } catch (err) {
-        console.warn('On-demand AC3/DTS audio engine unavailable:', err);
-        audioEngineText.textContent = '⚠️ Browser blocked AC3/DTS decoder (HTTPS required for MKV audio)';
-        setTimeout(() => audioEngineBadge.classList.add('hidden'), 5000);
-        return false;
-      } finally {
-        if (myJob === windowJobId) {
-          isExtractingWindow = false;
-        }
-      }
+      const resultPromise = ffmpegMutex.then(runJob, runJob);
+      ffmpegMutex = resultPromise.catch(() => {});
+      return resultPromise;
     }
 
     async function ensureAudioWindowForTimestamp(currentTime, isSeekJump = false) {
       if (!usesChunkedAudio || !activeFileRef) return;
 
       if (currentTime < windowStartSec || currentTime >= windowEndSec - 5) {
-        if (!isExtractingWindow || isSeekJump) {
-          await loadAudioWindow(currentTime, true);
+        if (!isExtractingWindow) {
+          await loadAudioWindow(currentTime, isSeekJump);
         }
         return;
       }
 
       const expectedAudioTime = currentTime - windowStartSec;
-      if (Math.abs(cinemaAudio.currentTime - expectedAudioTime) > 0.35) {
+      if (cinemaAudio.readyState >= 2 && Math.abs(cinemaAudio.currentTime - expectedAudioTime) > 0.4) {
         cinemaAudio.currentTime = expectedAudioTime;
       }
 
@@ -1258,6 +1392,11 @@
       const file = e.target.files[0];
       e.target.value = '';
       if (!file || !isRoomAuthorized) return;
+
+      // Unlock audio element & Web Audio context synchronously inside user file-picker gesture
+      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+      cinemaAudio.muted = false;
+      cinemaAudio.play().catch(() => {});
 
       if (roomActiveHostId || isHostingCinema) {
         const queueId = Math.random().toString(36).substring(2, 10);
@@ -1276,6 +1415,18 @@
 
     async function startStreamingLocalFile(file) {
       cleanupLocalCinemaUI();
+
+      // 1. Scan file for multiple audio tracks BEFORE loading/streaming
+      const detectedTracks = await probeFileAudioTracks(file);
+      let chosenTrackIdx = 0;
+
+      if (detectedTracks.length > 1) {
+        const picked = await promptUserForAudioTrack(detectedTracks);
+        if (picked === null) return; // User clicked Cancel
+        chosenTrackIdx = picked;
+      }
+      selectedAudioStreamIndex = chosenTrackIdx;
+
       isHostingCinema = true;
       roomActiveHostId = socket.id;
       currentCinemaMode = 'file';
@@ -1300,7 +1451,6 @@
         await cinemaVideo.play();
         playPauseBtn.textContent = '⏸ Pause';
 
-        // Wait 400ms so Chrome decodes the first AAC audio frames before capturing
         setTimeout(async () => {
           const isMobileDevice = /Android|iPhone|iPad/i.test(navigator.userAgent);
           let videoCapture;
@@ -1311,19 +1461,25 @@
 
           if (isMobileDevice) {
             const relayCanvas = document.createElement('canvas');
-            const scale = Math.min(1, 1280 / (cinemaVideo.videoWidth || 1280));
-            relayCanvas.width = Math.round((cinemaVideo.videoWidth || 1280) * scale);
-            relayCanvas.height = Math.round((cinemaVideo.videoHeight || 720) * scale);
+            const vw = cinemaVideo.videoWidth || 1280;
+            const vh = cinemaVideo.videoHeight || 720;
+            const scale = Math.min(1, 960 / vw);
+            relayCanvas.width = Math.round(vw * scale);
+            relayCanvas.height = Math.round(vh * scale);
             const ctx = relayCanvas.getContext('2d');
 
-            const drawLoop = () => {
-              if (!isHostingCinema || currentCinemaMode !== 'file') return;
-              if (!cinemaVideo.paused && !cinemaVideo.ended) {
+            // Draw immediately so first frame is never black
+            ctx.drawImage(cinemaVideo, 0, 0, relayCanvas.width, relayCanvas.height);
+
+            const canvasTimer = setInterval(() => {
+              if (!isHostingCinema || currentCinemaMode !== 'file') {
+                clearInterval(canvasTimer);
+                return;
+              }
+              if (cinemaVideo.readyState >= 2) {
                 ctx.drawImage(cinemaVideo, 0, 0, relayCanvas.width, relayCanvas.height);
               }
-              requestAnimationFrame(drawLoop);
-            };
-            requestAnimationFrame(drawLoop);
+            }, 42);
 
             videoCapture = relayCanvas.captureStream(24);
             if (nativeCapture && nativeCapture.getAudioTracks().length > 0) {
@@ -1334,19 +1490,24 @@
           }
 
           localCinemaStream = videoCapture;
+
+          // Use native HTML5 audio ONLY when single-track AND browser natively decodes it;
+          // otherwise (multi-track choice or AC3/DTS) decode chosen track via FFmpeg + Web Audio
           const hasNativeAudio =
+            detectedTracks.length <= 1 &&
+            chosenTrackIdx === 0 &&
             videoCapture.getAudioTracks().length > 0 &&
-            (cinemaVideo.webkitAudioDecodedByteCount === undefined ||
-              cinemaVideo.webkitAudioDecodedByteCount > 0);
+            (!cinemaVideo.audioTracks || cinemaVideo.audioTracks.length > 0);
 
           if (hasNativeAudio) {
             usesChunkedAudio = false;
+            cinemaVideo.muted = false;
+            cinemaVideo.volume = parseFloat(document.getElementById('cinemaVolume').value);
             broadcastCinemaStream('file');
             return;
           }
 
-          // No native decoded audio (common for AAC/AC3 inside .mkv):
-          // Mute raw video element and route audio via FFmpeg + Web Audio API
+          // Mute native video element audio so tracks don't overlap, and route chosen track via FFmpeg
           cinemaVideo.muted = true;
           usesChunkedAudio = true;
           broadcastCinemaStream('file');
@@ -1357,7 +1518,21 @@
             if (webAudioTrack) {
               localCinemaStream.addTrack(webAudioTrack);
               knownPeers.forEach(peerId => {
-                createPeer(peerId, 'cinema', true);
+                const pc = cinemaPeers[peerId];
+                if (pc) {
+                  pc.addTrack(webAudioTrack, localCinemaStream);
+                  pc.createOffer()
+                    .then(offer => pc.setLocalDescription(offer))
+                    .then(() => {
+                      socket.emit('offer', {
+                        target: peerId,
+                        sdp: pc.localDescription,
+                        mediaType: 'cinema'
+                      });
+                    });
+                } else {
+                  createPeer(peerId, 'cinema', true);
+                }
               });
             }
           }
