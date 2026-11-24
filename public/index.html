@@ -373,10 +373,9 @@
     let audioSourceNode = null;
     let audioDestNode = null;
 
-    // Sliding-Window On-Demand Buffer State
-    // Sliding-Window On-Demand Buffer State (45s chunks decode in ~3-5 seconds on mobile)
-    const WINDOW_DURATION_SEC = 45;
-    const PREFETCH_THRESHOLD_SEC = 20;
+    // Sliding-Window On-Demand Buffer State (90s WAV chunks decode in ~3-5 seconds on mobile)
+    const WINDOW_DURATION_SEC = 90;
+    const PREFETCH_THRESHOLD_SEC = 25;
     let ffmpegInstance = null;
     let activeFileRef = null;
     let usesChunkedAudio = false;
@@ -386,6 +385,7 @@
     let windowJobId = 0;
     let selectedAudioStreamIndex = 0;
     let selectedAudioIsStereoAAC = false;
+    let userWantsPlaying = false;
     let ffmpegMutex = Promise.resolve();
     let mobileCanvasTimer = null;
     let mobileRelayCanvas = null;
@@ -1046,9 +1046,11 @@
           }
         }
         if (action === 'play') {
+          userWantsPlaying = true;
           await cinemaVideo.play().catch(() => {});
           if (usesChunkedAudio && cinemaAudio.src) await cinemaAudio.play().catch(() => {});
         } else if (action === 'pause') {
+          userWantsPlaying = false;
           cinemaVideo.pause();
           if (usesChunkedAudio && cinemaAudio.src) cinemaAudio.pause();
         }
@@ -1114,12 +1116,16 @@
     playPauseBtn.addEventListener('click', () => {
       if (isHostingCinema) {
         if (cinemaVideo.ended) {
+          userWantsPlaying = true;
           cinemaVideo.currentTime = 0;
           cinemaVideo.play().catch(() => {});
         } else if (cinemaVideo.paused) {
+          userWantsPlaying = true;
           cinemaVideo.play().catch(() => {});
         } else {
+          userWantsPlaying = false;
           cinemaVideo.pause();
+          if (usesChunkedAudio && cinemaAudio.src) cinemaAudio.pause();
         }
       } else {
         const isAtEnd =
@@ -1279,11 +1285,18 @@
       });
     }
 
-    // Serialized Sliding-Window Audio Extraction (Uses user-chosen selectedAudioStreamIndex)
+    // Serialized Sliding-Window Audio Extraction (Fast WAV + respects Pause/Stop while buffering)
     async function loadAudioWindow(targetSec, isSeekJump = false) {
       if (!activeFileRef) return false;
       const myJob = ++windowJobId;
       isExtractingWindow = true;
+
+      // Auto-pause video while buffering so FFmpeg gets full CPU and stays synced
+      if (!cinemaVideo.paused) {
+        isRemoteSyncing = true;
+        cinemaVideo.pause();
+        setTimeout(() => { isRemoteSyncing = false; }, 100);
+      }
 
       const sliceStart = Math.max(0, Math.floor(targetSec - (isSeekJump ? 5 : 0)));
       const sliceDuration = WINDOW_DURATION_SEC;
@@ -1292,22 +1305,22 @@
       audioEngineText.textContent = `Buffering audio (Track ${selectedAudioStreamIndex + 1}) ${formatTime(sliceStart)} → ${formatTime(sliceStart + sliceDuration)}...`;
 
       const runJob = async () => {
-        if (myJob !== windowJobId || !activeFileRef) return false;
+        if (myJob !== windowJobId || !isHostingCinema || !activeFileRef) return false;
 
         try {
           const ff = await ensureFFmpegLoaded();
-          if (myJob !== windowJobId) return false;
+          if (myJob !== windowJobId || !isHostingCinema) return false;
 
           try { await ff.unmount('/work'); } catch (_) {}
           try { await ff.createDir('/work'); } catch (_) {}
           await ff.mount('WORKERFS', { files: [activeFileRef] }, '/work');
 
           const inputPath = `/work/${activeFileRef.name}`;
-          const chunkOut = `chunk_${myJob}.m4a`;
-
-          const audioEncodeArgs = selectedAudioIsStereoAAC
+          const useFastCopy = selectedAudioIsStereoAAC;
+          const chunkOut = useFastCopy ? `chunk_${myJob}.m4a` : `chunk_${myJob}.wav`;
+          const audioEncodeArgs = useFastCopy
             ? ['-c:a', 'copy']
-            : ['-c:a', 'aac', '-b:a', '96k', '-ac', '2', '-ar', '44100'];
+            : ['-c:a', 'pcm_s16le', '-ac', '2', '-ar', '32000'];
 
           const exitCode = await ff.exec([
             '-ss', String(sliceStart),
@@ -1321,10 +1334,10 @@
             chunkOut
           ]);
 
-          if (exitCode !== 0 || myJob !== windowJobId) {
+          if (exitCode !== 0 || myJob !== windowJobId || !isHostingCinema) {
             await ff.deleteFile(chunkOut).catch(() => {});
             try { await ff.unmount('/work'); } catch (_) {}
-            if (exitCode !== 0) throw new Error(`FFmpeg exited with code ${exitCode}`);
+            if (exitCode !== 0 && isHostingCinema) throw new Error(`FFmpeg exited with code ${exitCode}`);
             return false;
           }
 
@@ -1332,12 +1345,16 @@
           await ff.deleteFile(chunkOut).catch(() => {});
           try { await ff.unmount('/work'); } catch (_) {}
 
+          if (myJob !== windowJobId || !isHostingCinema) return false;
+
           if (!bytes || bytes.byteLength === 0) {
             throw new Error('Decoded audio chunk was empty');
           }
 
           if (currentAudioObjectUrl) URL.revokeObjectURL(currentAudioObjectUrl);
-          const blob = new Blob([bytes.buffer], { type: 'audio/mp4' });
+          const blob = new Blob([bytes.buffer], {
+            type: useFastCopy ? 'audio/mp4' : 'audio/wav'
+          });
           currentAudioObjectUrl = URL.createObjectURL(blob);
 
           windowStartSec = sliceStart;
@@ -1351,15 +1368,22 @@
           const relativeOffset = Math.max(0, cinemaVideo.currentTime - windowStartSec);
           cinemaAudio.currentTime = relativeOffset;
 
-          if (!cinemaVideo.paused) {
+          audioEngineBadge.classList.add('hidden');
+
+          // Only resume if the user did NOT pause or stop while buffering
+          if (userWantsPlaying && isHostingCinema) {
+            await cinemaVideo.play().catch(() => {});
             await cinemaAudio.play().catch(() => {});
+          } else {
+            cinemaVideo.pause();
+            cinemaAudio.pause();
+            playPauseBtn.textContent = '▶ Play';
           }
 
-          audioEngineBadge.classList.add('hidden');
           return true;
         } catch (err) {
           console.error('Audio window decode error:', err);
-          usesChunkedAudio = false; // Prevent infinite retry loop on timeupdate
+          usesChunkedAudio = false;
           const errMsg = err?.message || (typeof err === 'string' ? err : JSON.stringify(err));
           audioEngineText.textContent = `⚠️ Audio decode error: ${errMsg}`;
           setTimeout(() => audioEngineBadge.classList.add('hidden'), 5000);
@@ -1443,6 +1467,7 @@
       );
 
       isHostingCinema = true;
+      userWantsPlaying = true;
       roomActiveHostId = socket.id;
       currentCinemaMode = 'file';
       activeFileRef = file;
@@ -1494,7 +1519,7 @@
                 mobileCanvasTimer = null;
                 return;
               }
-              if (cinemaVideo.readyState >= 2) {
+              if (cinemaVideo.readyState >= 2 && !isExtractingWindow) {
                 ctx.drawImage(cinemaVideo, 0, 0, relayCanvas.width, relayCanvas.height);
               }
             }, 50);
@@ -1643,12 +1668,13 @@
 
     cinemaVideo.addEventListener('seeked', async () => {
       if (isHostingCinema && usesChunkedAudio) {
-        const wasPlaying = !cinemaVideo.paused;
-        if (wasPlaying) cinemaVideo.pause();
         await ensureAudioWindowForTimestamp(cinemaVideo.currentTime, true);
-        if (wasPlaying) {
+        if (userWantsPlaying && isHostingCinema) {
           await cinemaVideo.play().catch(() => {});
           await cinemaAudio.play().catch(() => {});
+        } else {
+          cinemaVideo.pause();
+          cinemaAudio.pause();
         }
       }
       if (!isRemoteSyncing) {
@@ -1780,6 +1806,7 @@
 
     function cleanupLocalCinemaUI() {
       isHostingCinema = false;
+      userWantsPlaying = false;
       didVideoEnd = false;
       currentCinemaMode = null;
       activeFileRef = null;
