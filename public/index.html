@@ -385,6 +385,8 @@
     let windowJobId = 0;
     let selectedAudioStreamIndex = 0;
     let ffmpegMutex = Promise.resolve();
+    let mobileCanvasTimer = null;
+    let mobileRelayCanvas = null;
 
     const cinemaVideo = document.getElementById('cinemaVideo');
     const cinemaAudio = document.getElementById('cinemaAudio');
@@ -958,7 +960,12 @@
     socket.on('offer', async ({ sdp, caller, mediaType }) => {
       knownPeers.add(caller);
       updatePeerBadge();
-      const pc = createPeer(caller, mediaType, false);
+      const peerStore = mediaType === 'call' ? callPeers : cinemaPeers;
+      const existingPc = peerStore[caller];
+      const pc = (existingPc && existingPc.signalingState !== 'closed')
+        ? existingPc
+        : createPeer(caller, mediaType, false);
+
       await pc.setRemoteDescription(new RTCSessionDescription(sdp));
       await flushIceQueue(pc, mediaType, caller);
 
@@ -1353,7 +1360,8 @@
           return true;
         } catch (err) {
           console.error('Audio window decode error:', err);
-          audioEngineText.textContent = `⚠️ Audio decode error: ${err.message || 'Unsupported codec'}`;
+          const errMsg = err?.message || (typeof err === 'string' ? err : JSON.stringify(err));
+          audioEngineText.textContent = `⚠️ Audio decode error: ${errMsg}`;
           setTimeout(() => audioEngineBadge.classList.add('hidden'), 5000);
           return false;
         } finally {
@@ -1455,45 +1463,46 @@
           const isMobileDevice = /Android|iPhone|iPad/i.test(navigator.userAgent);
           let videoCapture;
 
-          const nativeCapture = cinemaVideo.captureStream
-            ? cinemaVideo.captureStream(30)
-            : (cinemaVideo.mozCaptureStream ? cinemaVideo.mozCaptureStream(30) : null);
-
           if (isMobileDevice) {
+            // Do NOT call cinemaVideo.captureStream() on Android; it breaks drawImage() on hardware video.
             const relayCanvas = document.createElement('canvas');
             const vw = cinemaVideo.videoWidth || 1280;
             const vh = cinemaVideo.videoHeight || 720;
-            const scale = Math.min(1, 960 / vw);
+            const scale = Math.min(1, 854 / vw);
             relayCanvas.width = Math.round(vw * scale);
             relayCanvas.height = Math.round(vh * scale);
-            const ctx = relayCanvas.getContext('2d');
 
-            // Draw immediately so first frame is never black
+            // Attach offscreen to DOM so Android Chrome GPU compositor actually paints frames
+            relayCanvas.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:2px;height:2px;pointer-events:none;';
+            document.body.appendChild(relayCanvas);
+            mobileRelayCanvas = relayCanvas;
+
+            const ctx = relayCanvas.getContext('2d', { alpha: false });
             ctx.drawImage(cinemaVideo, 0, 0, relayCanvas.width, relayCanvas.height);
 
-            const canvasTimer = setInterval(() => {
+            videoCapture = relayCanvas.captureStream(24);
+
+            mobileCanvasTimer = setInterval(() => {
               if (!isHostingCinema || currentCinemaMode !== 'file') {
-                clearInterval(canvasTimer);
+                clearInterval(mobileCanvasTimer);
+                mobileCanvasTimer = null;
                 return;
               }
               if (cinemaVideo.readyState >= 2) {
                 ctx.drawImage(cinemaVideo, 0, 0, relayCanvas.width, relayCanvas.height);
               }
             }, 42);
-
-            videoCapture = relayCanvas.captureStream(24);
-            if (nativeCapture && nativeCapture.getAudioTracks().length > 0) {
-              videoCapture.addTrack(nativeCapture.getAudioTracks()[0]);
-            }
           } else {
-            videoCapture = nativeCapture;
+            videoCapture = cinemaVideo.captureStream
+              ? cinemaVideo.captureStream(30)
+              : cinemaVideo.mozCaptureStream(30);
           }
 
           localCinemaStream = videoCapture;
 
-          // Use native HTML5 audio ONLY when single-track AND browser natively decodes it;
-          // otherwise (multi-track choice or AC3/DTS) decode chosen track via FFmpeg + Web Audio
+          // Use native HTML5 audio ONLY on desktop single-track files where browser decodes audio natively
           const hasNativeAudio =
+            !isMobileDevice &&
             detectedTracks.length <= 1 &&
             chosenTrackIdx === 0 &&
             videoCapture.getAudioTracks().length > 0 &&
@@ -1507,7 +1516,7 @@
             return;
           }
 
-          // Mute native video element audio so tracks don't overlap, and route chosen track via FFmpeg
+          // Route audio via FFmpeg + Web Audio API
           cinemaVideo.muted = true;
           usesChunkedAudio = true;
           broadcastCinemaStream('file');
@@ -1519,7 +1528,7 @@
               localCinemaStream.addTrack(webAudioTrack);
               knownPeers.forEach(peerId => {
                 const pc = cinemaPeers[peerId];
-                if (pc) {
+                if (pc && pc.signalingState !== 'closed') {
                   pc.addTrack(webAudioTrack, localCinemaStream);
                   pc.createOffer()
                     .then(offer => pc.setLocalDescription(offer))
@@ -1773,6 +1782,15 @@
       windowEndSec = 0;
       isExtractingWindow = false;
       windowJobId++;
+
+      if (mobileCanvasTimer) {
+        clearInterval(mobileCanvasTimer);
+        mobileCanvasTimer = null;
+      }
+      if (mobileRelayCanvas) {
+        mobileRelayCanvas.remove();
+        mobileRelayCanvas = null;
+      }
 
       if (localCinemaStream) {
         localCinemaStream.getTracks().forEach(t => t.stop());
