@@ -1152,37 +1152,53 @@
     });
 
     // Helper: Ensure FFmpeg.wasm is loaded once using same-origin Blob URLs
+    // Helper: Ensure FFmpeg.wasm is fully loaded before returning it
     async function ensureFFmpegLoaded() {
       if (!window.FFmpegWASM || !window.FFmpegWASM.FFmpeg) {
         throw new Error('FFmpegWASM script not loaded');
       }
+      if (ffmpegInstance && ffmpegInstance.loaded) {
+        return ffmpegInstance;
+      }
+
       const { FFmpeg } = window.FFmpegWASM;
-      if (!ffmpegInstance) {
-        ffmpegInstance = new FFmpeg();
-        const toSameOriginBlob = async (url, mime) => {
-          const resp = await fetch(url);
-          if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${url}`);
-          const buf = await resp.arrayBuffer();
-          return URL.createObjectURL(new Blob([buf], { type: mime }));
-        };
+      const instance = new FFmpeg();
+
+      const toSameOriginBlob = async (url, mime) => {
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${url}`);
+        const buf = await resp.arrayBuffer();
+        return URL.createObjectURL(new Blob([buf], { type: mime }));
+      };
+
+      const coreBlobURL = await toSameOriginBlob(
+        'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
+        'text/javascript'
+      );
+      const wasmBlobURL = await toSameOriginBlob(
+        'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
+        'application/wasm'
+      );
+
+      try {
         const workerBlobURL = await toSameOriginBlob(
-          'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js',
+          'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js',
           'text/javascript'
         );
-        const coreBlobURL = await toSameOriginBlob(
-          'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
-          'text/javascript'
-        );
-        const wasmBlobURL = await toSameOriginBlob(
-          'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
-          'application/wasm'
-        );
-        await ffmpegInstance.load({
+        await instance.load({
           classWorkerURL: workerBlobURL,
           coreURL: coreBlobURL,
           wasmURL: wasmBlobURL
         });
+      } catch (workerErr) {
+        console.warn('Blob worker load failed, retrying default worker:', workerErr);
+        await instance.load({
+          coreURL: coreBlobURL,
+          wasmURL: wasmBlobURL
+        });
       }
+
+      ffmpegInstance = instance;
       return ffmpegInstance;
     }
 
