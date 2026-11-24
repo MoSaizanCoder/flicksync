@@ -7,7 +7,7 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="/styles.css" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" crossorigin="anonymous"></script>
-  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js" crossorigin="anonymous"></script>
+  <script src="/ffmpeg/ffmpeg/dist/umd/ffmpeg.js"></script>
   <script src="/socket.io/socket.io.js"></script>
 </head>
 <body class="min-h-screen flex flex-col font-sans">
@@ -496,13 +496,14 @@
       socket.emit('join-room', { roomId });
     });
 
+    let pendingCallUsers = [];
+
     socket.on('join-success', async ({ isPasswordLocked: locked }) => {
       isRoomAuthorized = true;
       unlockRoomModal.classList.add('hidden');
       if (locked) markPasswordLockedUI();
 
       if (!mediaInitialized) {
-        mediaInitialized = true;
         try {
           localCallStream = await navigator.mediaDevices.getUserMedia({
             video: { width: { ideal: 640 }, height: { ideal: 360 } },
@@ -513,16 +514,27 @@
           console.warn('Camera/Mic blocked or unavailable:', err);
           localCallStream = new MediaStream();
         }
-        Object.entries(callPeers).forEach(([peerId, pc]) => {
-          if (localCallStream && localCallStream.getTracks().length > 0) {
-            localCallStream.getTracks().forEach(track => pc.addTrack(track, localCallStream));
-            createPeer(peerId, 'call', true);
-          }
-        });
+        mediaInitialized = true;
+
+        if (pendingCallUsers.length > 0) {
+          pendingCallUsers.forEach(userId => {
+            knownPeers.add(userId);
+            createPeer(userId, 'call', true);
+          });
+          pendingCallUsers = [];
+          updatePeerBadge();
+          socket.emit('request-cinema');
+        }
       }
     });
 
     socket.on('all-users', (users) => {
+      if (!mediaInitialized) {
+        pendingCallUsers = users;
+        users.forEach(userId => knownPeers.add(userId));
+        updatePeerBadge();
+        return;
+      }
       users.forEach(userId => {
         knownPeers.add(userId);
         createPeer(userId, 'call', true);
@@ -1160,44 +1172,12 @@
       if (ffmpegInstance && ffmpegInstance.loaded) {
         return ffmpegInstance;
       }
-
       const { FFmpeg } = window.FFmpegWASM;
       const instance = new FFmpeg();
-
-      const toSameOriginBlob = async (url, mime) => {
-        const resp = await fetch(url);
-        if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${url}`);
-        const buf = await resp.arrayBuffer();
-        return URL.createObjectURL(new Blob([buf], { type: mime }));
-      };
-
-      const coreBlobURL = await toSameOriginBlob(
-        'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
-        'text/javascript'
-      );
-      const wasmBlobURL = await toSameOriginBlob(
-        'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
-        'application/wasm'
-      );
-
-      try {
-        const workerBlobURL = await toSameOriginBlob(
-          'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js',
-          'text/javascript'
-        );
-        await instance.load({
-          classWorkerURL: workerBlobURL,
-          coreURL: coreBlobURL,
-          wasmURL: wasmBlobURL
-        });
-      } catch (workerErr) {
-        console.warn('Blob worker load failed, retrying default worker:', workerErr);
-        await instance.load({
-          coreURL: coreBlobURL,
-          wasmURL: wasmBlobURL
-        });
-      }
-
+      await instance.load({
+        coreURL: '/ffmpeg/core/dist/umd/ffmpeg-core.js',
+        wasmURL: '/ffmpeg/core/dist/umd/ffmpeg-core.wasm'
+      });
       ffmpegInstance = instance;
       return ffmpegInstance;
     }
@@ -1376,6 +1356,7 @@
           return true;
         } catch (err) {
           console.error('Audio window decode error:', err);
+          usesChunkedAudio = false; // Prevent infinite retry loop on timeupdate
           const errMsg = err?.message || (typeof err === 'string' ? err : JSON.stringify(err));
           audioEngineText.textContent = `⚠️ Audio decode error: ${errMsg}`;
           setTimeout(() => audioEngineBadge.classList.add('hidden'), 5000);
