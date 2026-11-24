@@ -374,8 +374,9 @@
     let audioDestNode = null;
 
     // Sliding-Window On-Demand Buffer State
-    const WINDOW_DURATION_SEC = 300;
-    const PREFETCH_THRESHOLD_SEC = 120;
+    // Sliding-Window On-Demand Buffer State (45s chunks decode in ~3-5 seconds on mobile)
+    const WINDOW_DURATION_SEC = 45;
+    const PREFETCH_THRESHOLD_SEC = 20;
     let ffmpegInstance = null;
     let activeFileRef = null;
     let usesChunkedAudio = false;
@@ -384,6 +385,7 @@
     let isExtractingWindow = false;
     let windowJobId = 0;
     let selectedAudioStreamIndex = 0;
+    let selectedAudioIsStereoAAC = false;
     let ffmpegMutex = Promise.resolve();
     let mobileCanvasTimer = null;
     let mobileRelayCanvas = null;
@@ -1303,6 +1305,10 @@
           const inputPath = `/work/${activeFileRef.name}`;
           const chunkOut = `chunk_${myJob}.m4a`;
 
+          const audioEncodeArgs = selectedAudioIsStereoAAC
+            ? ['-c:a', 'copy']
+            : ['-c:a', 'aac', '-b:a', '96k', '-ac', '2', '-ar', '44100'];
+
           const exitCode = await ff.exec([
             '-ss', String(sliceStart),
             '-i', inputPath,
@@ -1311,10 +1317,7 @@
             '-vn',
             '-sn',
             '-dn',
-            '-c:a', 'aac',
-            '-b:a', '128k',
-            '-ac', '2',
-            '-ar', '48000',
+            ...audioEncodeArgs,
             chunkOut
           ]);
 
@@ -1432,6 +1435,13 @@
       }
       selectedAudioStreamIndex = chosenTrackIdx;
 
+      const chosenMeta = detectedTracks[chosenTrackIdx];
+      selectedAudioIsStereoAAC = Boolean(
+        chosenMeta &&
+        chosenMeta.codec === 'aac' &&
+        /stereo|2\.0|2 ch/i.test(chosenMeta.label)
+      );
+
       isHostingCinema = true;
       roomActiveHostId = socket.id;
       currentCinemaMode = 'file';
@@ -1461,23 +1471,22 @@
           let videoCapture;
 
           if (isMobileDevice) {
-            // Do NOT call cinemaVideo.captureStream() on Android; it breaks drawImage() on hardware video.
             const relayCanvas = document.createElement('canvas');
             const vw = cinemaVideo.videoWidth || 1280;
             const vh = cinemaVideo.videoHeight || 720;
-            const scale = Math.min(1, 854 / vw);
+            const scale = Math.min(1, 720 / vw);
             relayCanvas.width = Math.round(vw * scale);
             relayCanvas.height = Math.round(vh * scale);
 
-            // Attach offscreen to DOM so Android Chrome GPU compositor actually paints frames
-            relayCanvas.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:2px;height:2px;pointer-events:none;';
+            // Keep inside viewport at 1% opacity so Chrome's GPU compositor never skips painting
+            relayCanvas.style.cssText = 'position:fixed;left:0;top:0;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:-1;';
             document.body.appendChild(relayCanvas);
             mobileRelayCanvas = relayCanvas;
 
             const ctx = relayCanvas.getContext('2d', { alpha: false });
             ctx.drawImage(cinemaVideo, 0, 0, relayCanvas.width, relayCanvas.height);
 
-            videoCapture = relayCanvas.captureStream(24);
+            videoCapture = relayCanvas.captureStream(20);
 
             mobileCanvasTimer = setInterval(() => {
               if (!isHostingCinema || currentCinemaMode !== 'file') {
@@ -1488,7 +1497,7 @@
               if (cinemaVideo.readyState >= 2) {
                 ctx.drawImage(cinemaVideo, 0, 0, relayCanvas.width, relayCanvas.height);
               }
-            }, 42);
+            }, 50);
           } else {
             videoCapture = cinemaVideo.captureStream
               ? cinemaVideo.captureStream(30)
