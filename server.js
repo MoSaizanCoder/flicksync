@@ -7,7 +7,9 @@ const path = require('path');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  maxHttpBufferSize: 1e5 // 100 KB max signaling payload to prevent memory DoS
+  maxHttpBufferSize: 1e5, // 100 KB max signaling payload to prevent memory DoS
+  pingTimeout: 60000,
+  pingInterval: 25000
 });
 
 // Required headers so FFmpeg.wasm can decode AC3/DTS audio directly in browser RAM

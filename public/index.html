@@ -373,9 +373,9 @@
     let audioSourceNode = null;
     let audioDestNode = null;
 
-    // Sliding-Window On-Demand Buffer State (90s WAV chunks decode in ~3-5 seconds on mobile)
-    const WINDOW_DURATION_SEC = 90;
-    const PREFETCH_THRESHOLD_SEC = 25;
+    // Sliding-Window On-Demand Buffer State (20s chunks decode in ~2-4 seconds on mobile)
+    const WINDOW_DURATION_SEC = 20;
+    const PREFETCH_THRESHOLD_SEC = 8;
     let ffmpegInstance = null;
     let activeFileRef = null;
     let usesChunkedAudio = false;
@@ -834,6 +834,16 @@
           });
         }
       };
+
+      if (mediaType === 'call') {
+        pc.onconnectionstatechange = () => {
+          if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+            const staleTile = document.getElementById(`tile-${targetId}`);
+            if (staleTile) staleTile.remove();
+            delete remoteCallVideos[targetId];
+          }
+        };
+      }
 
       pc.ontrack = (e) => {
         const remoteStream = e.streams[0] || new MediaStream([e.track]);
@@ -1320,9 +1330,11 @@
           const chunkOut = useFastCopy ? `chunk_${myJob}.m4a` : `chunk_${myJob}.wav`;
           const audioEncodeArgs = useFastCopy
             ? ['-c:a', 'copy']
-            : ['-c:a', 'pcm_s16le', '-ac', '2', '-ar', '32000'];
+            : ['-c:a', 'pcm_s16le', '-ac', '2', '-ar', '24000'];
 
           const exitCode = await ff.exec([
+            '-probesize', '1000000',
+            '-analyzeduration', '1000000',
             '-ss', String(sliceStart),
             '-i', inputPath,
             '-t', String(sliceDuration),
