@@ -495,7 +495,6 @@
           console.warn('Camera/Mic blocked or unavailable:', err);
           localCallStream = new MediaStream();
         }
-        // Attach local call tracks to any peers created during initial handshake
         Object.entries(callPeers).forEach(([peerId, pc]) => {
           if (localCallStream && localCallStream.getTracks().length > 0) {
             localCallStream.getTracks().forEach(track => pc.addTrack(track, localCallStream));
@@ -504,6 +503,18 @@
         });
       }
     });
+
+    socket.on('all-users', (users) => {
+      users.forEach(userId => {
+        knownPeers.add(userId);
+        createPeer(userId, 'call', true);
+      });
+      updatePeerBadge();
+      if (isRoomAuthorized && users.length > 0) {
+        socket.emit('request-cinema');
+      }
+    });
+
 
     // Live Chat + Auto-Clickable Links (XSS-Safe DOM Parser)
     const chatForm = document.getElementById('chatForm');
@@ -841,17 +852,6 @@
       }
     }
 
-    socket.on('all-users', (users) => {
-      users.forEach(userId => {
-        knownPeers.add(userId);
-        createPeer(userId, 'call', true);
-      });
-      updatePeerBadge();
-      if (users.length > 0) {
-        socket.emit('request-cinema');
-      }
-    });
-
     socket.on('user-joined', (userId) => {
       knownPeers.add(userId);
       updatePeerBadge();
@@ -940,7 +940,6 @@
     });
 
     socket.on('offer', async ({ sdp, caller, mediaType }) => {
-      if (!isRoomAuthorized) return;
       knownPeers.add(caller);
       updatePeerBadge();
       const pc = createPeer(caller, mediaType, false);
@@ -1154,6 +1153,10 @@
             const buf = await resp.arrayBuffer();
             return URL.createObjectURL(new Blob([buf], { type: mime }));
           };
+          const workerBlobURL = await toSameOriginBlob(
+            'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js',
+            'text/javascript'
+          );
           const coreBlobURL = await toSameOriginBlob(
             'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
             'text/javascript'
@@ -1163,6 +1166,7 @@
             'application/wasm'
           );
           await ffmpegInstance.load({
+            classWorkerURL: workerBlobURL,
             coreURL: coreBlobURL,
             wasmURL: wasmBlobURL
           });
@@ -1296,13 +1300,16 @@
         await cinemaVideo.play();
         playPauseBtn.textContent = '⏸ Pause';
 
+        // Wait 400ms so Chrome decodes the first AAC audio frames before capturing
         setTimeout(async () => {
           const isMobileDevice = /Android|iPhone|iPad/i.test(navigator.userAgent);
           let videoCapture;
 
+          const nativeCapture = cinemaVideo.captureStream
+            ? cinemaVideo.captureStream(30)
+            : (cinemaVideo.mozCaptureStream ? cinemaVideo.mozCaptureStream(30) : null);
+
           if (isMobileDevice) {
-            // Android Chrome hardware <video>.captureStream() often sends black frames over WebRTC;
-            // drawing frames onto an offscreen canvas guarantees real video frames reach the laptop.
             const relayCanvas = document.createElement('canvas');
             const scale = Math.min(1, 1280 / (cinemaVideo.videoWidth || 1280));
             relayCanvas.width = Math.round((cinemaVideo.videoWidth || 1280) * scale);
@@ -1319,27 +1326,31 @@
             requestAnimationFrame(drawLoop);
 
             videoCapture = relayCanvas.captureStream(24);
-            const nativeCapture = cinemaVideo.captureStream
-              ? cinemaVideo.captureStream()
-              : (cinemaVideo.mozCaptureStream ? cinemaVideo.mozCaptureStream() : null);
             if (nativeCapture && nativeCapture.getAudioTracks().length > 0) {
               videoCapture.addTrack(nativeCapture.getAudioTracks()[0]);
             }
           } else {
-            videoCapture = cinemaVideo.captureStream
-              ? cinemaVideo.captureStream(30)
-              : cinemaVideo.mozCaptureStream(30);
+            videoCapture = nativeCapture;
           }
 
           localCinemaStream = videoCapture;
-          broadcastCinemaStream('file');
+          const hasNativeAudio =
+            videoCapture.getAudioTracks().length > 0 &&
+            (cinemaVideo.webkitAudioDecodedByteCount === undefined ||
+              cinemaVideo.webkitAudioDecodedByteCount > 0);
 
-          if (videoCapture.getAudioTracks().length > 0) {
+          if (hasNativeAudio) {
             usesChunkedAudio = false;
+            broadcastCinemaStream('file');
             return;
           }
 
+          // No native decoded audio (common for AAC/AC3 inside .mkv):
+          // Mute raw video element and route audio via FFmpeg + Web Audio API
+          cinemaVideo.muted = true;
           usesChunkedAudio = true;
+          broadcastCinemaStream('file');
+
           const ok = await loadAudioWindow(cinemaVideo.currentTime, false);
           if (ok && isHostingCinema) {
             const webAudioTrack = getCapturedAudioTrackFromElement();
@@ -1350,7 +1361,7 @@
               });
             }
           }
-        }, 200);
+        }, 400);
       };
     }
 
