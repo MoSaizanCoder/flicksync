@@ -503,3 +503,14 @@ body.theater-fullscreen #chatSendBtn {
     max-height: 56px;
   }
 }
+
+/* Highlight Fullscreen Exit/Stop Button in Red */
+body.theater-fullscreen #exitFullscreenBtn {
+  background-color: #e11d48;
+  border-color: #fb7185;
+  color: #ffffff;
+}
+
+body.theater-fullscreen #exitFullscreenBtn:hover {
+  background-color: #be123c;
+}

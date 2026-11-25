@@ -119,7 +119,7 @@
               🖥️ Share Screen
             </button>
             <button id="stopStreamBtn" class="hidden bg-rose-600 hover:bg-rose-500 text-xs font-medium px-3 py-2 rounded-lg transition">
-              ⏹ Stop Movie
+              ⏹ Stop Stream
             </button>
 
             <!-- Queue Drawer Button -->
@@ -986,6 +986,9 @@
 
     socket.on('cinema-status', ({ active }) => {
       if (!active) {
+        if (document.body.classList.contains('theater-fullscreen')) {
+          toggleTheaterFullscreen(false);
+        }
         cleanupLocalCinemaUI();
       }
     });
@@ -1461,15 +1464,17 @@
     }
 
     function applyCinemaVolume(vol) {
-      cinemaVolumeSlider.value = vol;
-      fsCinemaVolumeSlider.value = vol;
-      fsMovieVolPct.textContent = `${Math.round(vol * 100)}%`;
+      const safeVol = Math.max(0, Math.min(1, vol));
+      cinemaVolumeSlider.value = safeVol;
+      fsCinemaVolumeSlider.value = safeVol;
+      fsMovieVolPct.textContent = `${Math.round(safeVol * 100)}%`;
+
+      cinemaAudio.muted = false;
+      cinemaAudio.volume = safeVol;
+
       if (isHostingCinema) {
         cinemaVideo.muted = false;
-        cinemaVideo.volume = vol;
-      } else {
-        cinemaAudio.muted = false;
-        cinemaAudio.volume = vol;
+        cinemaVideo.volume = safeVol;
       }
     }
 
@@ -1481,12 +1486,14 @@
     const fsCallVolPct = document.getElementById('fsCallVolPct');
 
     function applyCallVolume(vol) {
-      callVolumeSlider.value = vol;
-      fsCallVolumeSlider.value = vol;
-      fsCallVolPct.textContent = `${Math.round(vol * 100)}%`;
+      const safeVol = Math.max(0, Math.min(1, vol));
+      callVolumeSlider.value = safeVol;
+      fsCallVolumeSlider.value = safeVol;
+      fsCallVolPct.textContent = `${Math.round(safeVol * 100)}%`;
+
       Object.values(remoteCallVideos).forEach(videoEl => {
         videoEl.muted = false;
-        videoEl.volume = vol;
+        videoEl.volume = safeVol;
       });
     }
 
