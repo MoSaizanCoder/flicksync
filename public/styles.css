@@ -538,3 +538,39 @@ body.in-lobby #queueBackdrop {
 body.in-lobby .lobby-screen {
   display: flex;
 }
+
+/* =========================================================
+   Individual Camera Tile Expand-to-Stage Button
+   ========================================================= */
+.cam-expand-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: rgba(2, 6, 23, 0.78);
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: #f8fafc;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  z-index: 12;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.cam-expand-btn:hover {
+  background: #4f46e5;
+  border-color: #818cf8;
+}
+
+/* Hide expand buttons whenever a movie or screen share is active */
+body.cinema-active .cam-expand-btn {
+  display: none !important;
+}
+
+/* Highlight the sidebar tile whose feed is currently enlarged in the center stage */
+.cam-tile.is-focused-on-stage {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.45);
+}

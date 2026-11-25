@@ -195,9 +195,17 @@
 
       <!-- Stacked Live Video Call Camera Boxes -->
       <div id="webcamGrid" class="webcam-stack custom-scrollbar">
-        <div class="cam-tile">
+        <div id="tile-local" class="cam-tile">
           <video id="localCamVideo" autoplay muted playsinline></video>
           <span id="localCamLabel" class="cam-badge">You</span>
+          <button
+            id="localCamExpandBtn"
+            type="button"
+            class="cam-expand-btn"
+            title="Expand camera to center stage"
+          >
+            ⛶
+          </button>
         </div>
       </div>
 
@@ -399,6 +407,7 @@
     let isDraggingSlider = false;
     let isRemotePaused = false;
     let didVideoEnd = false;
+    let focusedCameraPeerId = null; // 'local' or remote userId when enlarged on center stage
 
     const localQueuedFiles = new Map();
 
@@ -936,6 +945,73 @@
       document.getElementById('peerCountBadge').textContent = `● ${count} in Room`;
     }
 
+    function updateCameraExpandButtons() {
+      const isStreamBusy = Boolean(isHostingCinema || roomActiveHostId || currentCinemaMode);
+      document.body.classList.toggle('cinema-active', isStreamBusy);
+
+      document.querySelectorAll('.cam-tile').forEach(tile => {
+        tile.classList.remove('is-focused-on-stage');
+      });
+      document.querySelectorAll('.cam-expand-btn').forEach(btn => {
+        btn.textContent = '⛶';
+        btn.title = 'Expand camera to center stage';
+      });
+
+      if (focusedCameraPeerId && !isStreamBusy) {
+        const activeTile = document.getElementById(`tile-${focusedCameraPeerId}`);
+        const activeBtn = activeTile?.querySelector('.cam-expand-btn');
+        if (activeTile) activeTile.classList.add('is-focused-on-stage');
+        if (activeBtn) {
+          activeBtn.textContent = '🗗';
+          activeBtn.title = 'Return camera to sidebar';
+        }
+      }
+    }
+
+    function clearFocusedCameraOnStage() {
+      if (!focusedCameraPeerId) return;
+      focusedCameraPeerId = null;
+
+      if (!isHostingCinema && !roomActiveHostId && !currentCinemaMode) {
+        cinemaVideo.pause();
+        cinemaVideo.srcObject = null;
+        cinemaVideo.removeAttribute('src');
+        stagePlaceholder.classList.remove('hidden');
+      }
+      updateCameraExpandButtons();
+    }
+
+    function toggleCameraFocusOnStage(peerId) {
+      if (isHostingCinema || roomActiveHostId || currentCinemaMode) {
+        showToast('Stop the active movie or screen share first to expand a camera.');
+        return;
+      }
+
+      // Clicking the same camera's button again restores it back to normal
+      if (focusedCameraPeerId === peerId) {
+        clearFocusedCameraOnStage();
+        return;
+      }
+
+      const targetStream = peerId === 'local'
+        ? localCallStream
+        : remoteCallVideos[peerId]?.srcObject;
+
+      if (!targetStream) return;
+
+      focusedCameraPeerId = peerId;
+      cinemaVideo.removeAttribute('src');
+      cinemaVideo.srcObject = targetStream;
+      cinemaVideo.muted = true; // Audio continues through the call stream without echo
+      stagePlaceholder.classList.add('hidden');
+      cinemaVideo.play().catch(() => {});
+      updateCameraExpandButtons();
+    }
+
+    document.getElementById('localCamExpandBtn').addEventListener('click', () => {
+      toggleCameraFocusOnStage('local');
+    });
+
     function createPeer(targetId, mediaType, isInitiator) {
       const peerStore = mediaType === 'call' ? callPeers : cinemaPeers;
       if (peerStore[targetId]) {
@@ -979,6 +1055,7 @@
         if (mediaType === 'call') {
           renderRemoteCallVideo(targetId, remoteStream);
         } else if (mediaType === 'cinema' && !isHostingCinema) {
+          focusedCameraPeerId = null;
           stagePlaceholder.classList.add('hidden');
           stopStreamBtn.classList.remove('hidden');
           customPlayerBar.classList.remove('hidden');
@@ -1045,6 +1122,10 @@
     // XSS-Safe Queue Rendering (Uses textContent only, never innerHTML for user titles)
     socket.on('queue-updated', ({ activeHostId, queue }) => {
       roomActiveHostId = activeHostId;
+      if (activeHostId && focusedCameraPeerId) {
+        clearFocusedCameraOnStage();
+      }
+      updateCameraExpandButtons();
       queueCountBadge.textContent = queue.length;
       fsQueueBadge.textContent = queue.length;
 
@@ -1221,6 +1302,9 @@
       const tile = document.getElementById(`tile-${userId}`);
       if (tile) tile.remove();
       delete remoteCallVideos[userId];
+      if (focusedCameraPeerId === userId) {
+        clearFocusedCameraOnStage();
+      }
     });
 
     function renderRemoteCallVideo(userId, stream) {
@@ -1238,14 +1322,28 @@
         label.className = 'cam-badge';
         label.textContent = `Friend (${userId.slice(0, 4)})`;
 
+        const expandBtn = document.createElement('button');
+        expandBtn.type = 'button';
+        expandBtn.className = 'cam-expand-btn';
+        expandBtn.textContent = '⛶';
+        expandBtn.title = 'Expand camera to center stage';
+        expandBtn.addEventListener('click', () => toggleCameraFocusOnStage(userId));
+
         tile.appendChild(videoEl);
         tile.appendChild(label);
+        tile.appendChild(expandBtn);
         document.getElementById('webcamGrid').appendChild(tile);
         remoteCallVideos[userId] = videoEl;
       }
       videoEl.srcObject = stream;
       videoEl.volume = parseFloat(document.getElementById('callVolume').value);
       videoEl.play().catch(() => {});
+
+      if (focusedCameraPeerId === userId && cinemaVideo.srcObject !== stream) {
+        cinemaVideo.srcObject = stream;
+        cinemaVideo.play().catch(() => {});
+      }
+      updateCameraExpandButtons();
     }
 
     playPauseBtn.addEventListener('click', () => {
@@ -1326,6 +1424,7 @@
 
     async function startStreamingLocalFile(file) {
       cleanupLocalCinemaUI();
+      clearFocusedCameraOnStage();
 
       isHostingCinema = true;
       roomActiveHostId = socket.id;
@@ -1518,6 +1617,7 @@
         });
 
         cleanupLocalCinemaUI();
+        clearFocusedCameraOnStage();
         isHostingCinema = true;
         roomActiveHostId = socket.id;
         currentCinemaMode = 'screen';
@@ -1628,6 +1728,7 @@
 
       stagePlaceholder.classList.remove('hidden');
       stopStreamBtn.classList.add('hidden');
+      updateCameraExpandButtons();
     }
 
     function applyCinemaVolume(vol) {
