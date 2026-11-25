@@ -12,15 +12,7 @@ const io = new Server(server, {
   pingInterval: 25000
 });
 
-// Required headers so FFmpeg.wasm can decode AC3/DTS audio directly in browser RAM
-app.use((req, res, next) => {
-  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-  res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
-  next();
-});
-
 app.use(express.static(path.join(__dirname, 'public')));
-app.use('/ffmpeg', express.static(path.join(__dirname, 'node_modules', '@ffmpeg')));
 
 app.get('/room/:roomId', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));

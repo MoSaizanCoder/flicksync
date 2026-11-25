@@ -7,7 +7,6 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="/styles.css" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" crossorigin="anonymous"></script>
-  <script src="/ffmpeg/ffmpeg/dist/umd/ffmpeg.js"></script>
   <script src="/socket.io/socket.io.js"></script>
 </head>
 <body class="min-h-screen flex flex-col font-sans">
@@ -72,12 +71,6 @@
 
         <!-- Gesture Zone for Single-Tap Play/Pause & Double-Tap +/-10s Seek -->
         <div id="videoGestureZone" class="absolute inset-0 z-10 cursor-pointer"></div>
-
-        <!-- Sliding-Window Buffer Status Pill -->
-        <div id="audioEngineBadge" class="hidden absolute top-3 left-3 bg-indigo-950/90 border border-indigo-500/50 text-indigo-200 text-[11px] px-3 py-1.5 rounded-full z-20 flex items-center gap-2">
-          <span class="w-2 h-2 bg-indigo-400 rounded-full animate-ping"></span>
-          <span id="audioEngineText">Buffering 5-min audio window...</span>
-        </div>
 
         <!-- Queue Toast Notification -->
         <div id="queueToast" class="hidden absolute top-3 right-3 bg-emerald-950/95 border border-emerald-500/60 text-emerald-200 text-xs px-3.5 py-2 rounded-xl shadow-lg z-30">
@@ -287,20 +280,6 @@
     </div>
   </div>
 
-  <!-- Audio Track Selection Modal (Shown before loading when video has 2+ audio tracks) -->
-  <div id="audioTrackModal" class="hidden fixed inset-0 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-sm w-full shadow-2xl">
-      <h3 class="text-base font-bold text-slate-100 mb-1">🎧 Select Audio Track</h3>
-      <p id="audioTrackSubtitle" class="text-xs text-slate-400 mb-4">
-        This file has multiple audio tracks. Choose which one to load and stream:
-      </p>
-      <div id="audioTrackOptionsList" class="flex flex-col gap-2 max-h-60 overflow-y-auto custom-scrollbar mb-4"></div>
-      <button type="button" id="cancelAudioTrackBtn" class="w-full bg-slate-800 hover:bg-slate-700 text-xs font-medium py-2.5 rounded-lg border border-slate-700">
-        Cancel
-      </button>
-    </div>
-  </div>
-
   <!-- QR Code Modal -->
   <div id="qrModal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
     <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-xs w-full text-center shadow-2xl">
@@ -360,7 +339,6 @@
     let roomActiveHostId = null;
     let currentCinemaMode = null;
     let currentObjectUrl = null;
-    let currentAudioObjectUrl = null;
     let isRemoteSyncing = false;
     let isDraggingSlider = false;
     let isRemotePaused = false;
@@ -368,25 +346,10 @@
 
     const localQueuedFiles = new Map();
 
-    // Web Audio API bridge
+    // Web Audio API bridge (captures native <video> audio on mobile for WebRTC)
     let audioCtx = null;
-    let audioSourceNode = null;
-    let audioDestNode = null;
-
-    // Sliding-Window On-Demand Buffer State (20s chunks decode in ~2-4 seconds on mobile)
-    const WINDOW_DURATION_SEC = 20;
-    const PREFETCH_THRESHOLD_SEC = 8;
-    let ffmpegInstance = null;
-    let activeFileRef = null;
-    let usesChunkedAudio = false;
-    let windowStartSec = 0;
-    let windowEndSec = 0;
-    let isExtractingWindow = false;
-    let windowJobId = 0;
-    let selectedAudioStreamIndex = 0;
-    let selectedAudioIsStereoAAC = false;
-    let userWantsPlaying = false;
-    let ffmpegMutex = Promise.resolve();
+    let videoAudioSourceNode = null;
+    let videoAudioDestNode = null;
     let mobileCanvasTimer = null;
     let mobileRelayCanvas = null;
 
@@ -394,9 +357,6 @@
     const cinemaAudio = document.getElementById('cinemaAudio');
     const stagePlaceholder = document.getElementById('stagePlaceholder');
     const stopStreamBtn = document.getElementById('stopStreamBtn');
-
-    const audioEngineBadge = document.getElementById('audioEngineBadge');
-    const audioEngineText = document.getElementById('audioEngineText');
     const queueToast = document.getElementById('queueToast');
 
     const customPlayerBar = document.getElementById('customPlayerBar');
@@ -777,19 +737,21 @@
       setTimeout(() => queueToast.classList.add('hidden'), 3200);
     }
 
-    function getCapturedAudioTrackFromElement() {
+    function getNativeVideoAudioTrack() {
       if (!audioCtx) {
         const AudioContextClass = window.AudioContext || window.webkitAudioContext;
         audioCtx = new AudioContextClass();
-        audioSourceNode = audioCtx.createMediaElementSource(cinemaAudio);
-        audioDestNode = audioCtx.createMediaStreamDestination();
-        audioSourceNode.connect(audioCtx.destination);
-        audioSourceNode.connect(audioDestNode);
+      }
+      if (!videoAudioSourceNode) {
+        videoAudioSourceNode = audioCtx.createMediaElementSource(cinemaVideo);
+        videoAudioDestNode = audioCtx.createMediaStreamDestination();
+        videoAudioSourceNode.connect(audioCtx.destination);
+        videoAudioSourceNode.connect(videoAudioDestNode);
       }
       if (audioCtx.state === 'suspended') {
         audioCtx.resume().catch(() => {});
       }
-      return audioDestNode.stream.getAudioTracks()[0];
+      return videoAudioDestNode.stream.getAudioTracks()[0];
     }
 
     function formatTime(sec) {
@@ -1051,18 +1013,11 @@
       if (isHostingCinema && currentCinemaMode === 'file') {
         if (action === 'seek') {
           cinemaVideo.currentTime = currentTime;
-          if (usesChunkedAudio) {
-            await ensureAudioWindowForTimestamp(currentTime, true);
-          }
         }
         if (action === 'play') {
-          userWantsPlaying = true;
           await cinemaVideo.play().catch(() => {});
-          if (usesChunkedAudio && cinemaAudio.src) await cinemaAudio.play().catch(() => {});
         } else if (action === 'pause') {
-          userWantsPlaying = false;
           cinemaVideo.pause();
-          if (usesChunkedAudio && cinemaAudio.src) cinemaAudio.pause();
         }
         playPauseBtn.textContent = cinemaVideo.ended
           ? '▶ Replay'
@@ -1126,16 +1081,12 @@
     playPauseBtn.addEventListener('click', () => {
       if (isHostingCinema) {
         if (cinemaVideo.ended) {
-          userWantsPlaying = true;
           cinemaVideo.currentTime = 0;
           cinemaVideo.play().catch(() => {});
         } else if (cinemaVideo.paused) {
-          userWantsPlaying = true;
           cinemaVideo.play().catch(() => {});
         } else {
-          userWantsPlaying = false;
           cinemaVideo.pause();
-          if (usesChunkedAudio && cinemaAudio.src) cinemaAudio.pause();
         }
       } else {
         const isAtEnd =
@@ -1181,266 +1132,12 @@
       }
     });
 
-    // Helper: Ensure FFmpeg.wasm is loaded once using same-origin Blob URLs
-    // Helper: Ensure FFmpeg.wasm is fully loaded before returning it
-    async function ensureFFmpegLoaded() {
-      if (!window.FFmpegWASM || !window.FFmpegWASM.FFmpeg) {
-        throw new Error('FFmpegWASM script not loaded');
-      }
-      if (ffmpegInstance && ffmpegInstance.loaded) {
-        return ffmpegInstance;
-      }
-      const { FFmpeg } = window.FFmpegWASM;
-      const instance = new FFmpeg();
-      await instance.load({
-        coreURL: '/ffmpeg/core/dist/umd/ffmpeg-core.js',
-        wasmURL: '/ffmpeg/core/dist/umd/ffmpeg-core.wasm'
-      });
-      ffmpegInstance = instance;
-      return ffmpegInstance;
-    }
-
-    // Probe all audio streams inside a file before starting playback
-    function probeFileAudioTracks(file) {
-      const runProbe = async () => {
-        audioEngineBadge.classList.remove('hidden');
-        audioEngineText.textContent = 'Scanning audio tracks...';
-        try {
-          const ff = await ensureFFmpegLoaded();
-          const logs = [];
-          const logHandler = ({ message }) => logs.push(message);
-          ff.on('log', logHandler);
-
-          try { await ff.unmount('/work'); } catch (_) {}
-          try { await ff.createDir('/work'); } catch (_) {}
-          await ff.mount('WORKERFS', { files: [file] }, '/work');
-
-          // Running -i without output prints stream metadata and exits cleanly
-          await ff.exec(['-i', `/work/${file.name}`]).catch(() => {});
-          ff.off('log', logHandler);
-          try { await ff.unmount('/work'); } catch (_) {}
-
-          const tracks = [];
-          const streamRegex = /Stream #0:(\d+)(?:\(([^)]+)\))?: Audio:\s*([^,\r\n]+)(?:,\s*([^,\r\n]+))?(?:,\s*([^,\r\n]+))?/i;
-
-          for (const line of logs) {
-            const match = line.match(streamRegex);
-            if (match) {
-              const lang = match[2] && match[2] !== 'und' ? match[2].toUpperCase() : null;
-              const codec = (match[3] || 'Audio').split(' ')[0].toUpperCase();
-              const channels = match[5] ? match[5].trim() : '';
-              const trackNum = tracks.length + 1;
-              const labelParts = [`Track ${trackNum}`];
-              if (lang) labelParts.push(lang);
-              labelParts.push(`(${codec}${channels ? ', ' + channels : ''})`);
-
-              tracks.push({
-                audioIndex: tracks.length, // 0-based index for -map 0:a:<audioIndex>
-                codec: codec.toLowerCase(),
-                label: labelParts.join(' ')
-              });
-            }
-          }
-          audioEngineBadge.classList.add('hidden');
-          return tracks;
-        } catch (err) {
-          console.warn('Audio track probe skipped:', err);
-          audioEngineBadge.classList.add('hidden');
-          return [];
-        }
-      };
-
-      const p = ffmpegMutex.then(runProbe, runProbe);
-      ffmpegMutex = p.catch(() => {});
-      return p;
-    }
-
-    // Show modal when 2+ audio tracks exist; resolves with chosen 0-based audioIndex (or null if cancelled)
-    const audioTrackModal = document.getElementById('audioTrackModal');
-    const audioTrackOptionsList = document.getElementById('audioTrackOptionsList');
-    const cancelAudioTrackBtn = document.getElementById('cancelAudioTrackBtn');
-
-    function promptUserForAudioTrack(tracks) {
-      return new Promise((resolve) => {
-        audioTrackOptionsList.innerHTML = '';
-
-        tracks.forEach((track) => {
-          const btn = document.createElement('button');
-          btn.type = 'button';
-          btn.className = 'w-full text-left bg-slate-950 hover:bg-indigo-600/30 border border-slate-700 hover:border-indigo-500 rounded-xl px-3.5 py-2.5 text-xs font-medium text-slate-100 transition flex items-center justify-between';
-
-          const nameSpan = document.createElement('span');
-          nameSpan.textContent = `🔊 ${track.label}`;
-
-          const badgeSpan = document.createElement('span');
-          badgeSpan.className = 'text-[10px] text-indigo-300 font-semibold';
-          badgeSpan.textContent = 'Select →';
-
-          btn.appendChild(nameSpan);
-          btn.appendChild(badgeSpan);
-
-          btn.onclick = () => {
-            audioTrackModal.classList.add('hidden');
-            resolve(track.audioIndex);
-          };
-          audioTrackOptionsList.appendChild(btn);
-        });
-
-        cancelAudioTrackBtn.onclick = () => {
-          audioTrackModal.classList.add('hidden');
-          resolve(null);
-        };
-
-        audioTrackModal.classList.remove('hidden');
-      });
-    }
-
-    // Serialized Sliding-Window Audio Extraction (Fast WAV + respects Pause/Stop while buffering)
-    async function loadAudioWindow(targetSec, isSeekJump = false) {
-      if (!activeFileRef) return false;
-      const myJob = ++windowJobId;
-      isExtractingWindow = true;
-
-      // Auto-pause video while buffering so FFmpeg gets full CPU and stays synced
-      if (!cinemaVideo.paused) {
-        isRemoteSyncing = true;
-        cinemaVideo.pause();
-        setTimeout(() => { isRemoteSyncing = false; }, 100);
-      }
-
-      const sliceStart = Math.max(0, Math.floor(targetSec - (isSeekJump ? 5 : 0)));
-      const sliceDuration = WINDOW_DURATION_SEC;
-
-      audioEngineBadge.classList.remove('hidden');
-      audioEngineText.textContent = `Buffering audio (Track ${selectedAudioStreamIndex + 1}) ${formatTime(sliceStart)} → ${formatTime(sliceStart + sliceDuration)}...`;
-
-      const runJob = async () => {
-        if (myJob !== windowJobId || !isHostingCinema || !activeFileRef) return false;
-
-        try {
-          const ff = await ensureFFmpegLoaded();
-          if (myJob !== windowJobId || !isHostingCinema) return false;
-
-          try { await ff.unmount('/work'); } catch (_) {}
-          try { await ff.createDir('/work'); } catch (_) {}
-          await ff.mount('WORKERFS', { files: [activeFileRef] }, '/work');
-
-          const inputPath = `/work/${activeFileRef.name}`;
-          const useFastCopy = selectedAudioIsStereoAAC;
-          const chunkOut = useFastCopy ? `chunk_${myJob}.m4a` : `chunk_${myJob}.wav`;
-          const audioEncodeArgs = useFastCopy
-            ? ['-c:a', 'copy']
-            : ['-c:a', 'pcm_s16le', '-ac', '2', '-ar', '24000'];
-
-          const exitCode = await ff.exec([
-            '-probesize', '1000000',
-            '-analyzeduration', '1000000',
-            '-ss', String(sliceStart),
-            '-i', inputPath,
-            '-t', String(sliceDuration),
-            '-map', `0:a:${selectedAudioStreamIndex}`,
-            '-vn',
-            '-sn',
-            '-dn',
-            ...audioEncodeArgs,
-            chunkOut
-          ]);
-
-          if (exitCode !== 0 || myJob !== windowJobId || !isHostingCinema) {
-            await ff.deleteFile(chunkOut).catch(() => {});
-            try { await ff.unmount('/work'); } catch (_) {}
-            if (exitCode !== 0 && isHostingCinema) throw new Error(`FFmpeg exited with code ${exitCode}`);
-            return false;
-          }
-
-          const bytes = await ff.readFile(chunkOut);
-          await ff.deleteFile(chunkOut).catch(() => {});
-          try { await ff.unmount('/work'); } catch (_) {}
-
-          if (myJob !== windowJobId || !isHostingCinema) return false;
-
-          if (!bytes || bytes.byteLength === 0) {
-            throw new Error('Decoded audio chunk was empty');
-          }
-
-          if (currentAudioObjectUrl) URL.revokeObjectURL(currentAudioObjectUrl);
-          const blob = new Blob([bytes.buffer], {
-            type: useFastCopy ? 'audio/mp4' : 'audio/wav'
-          });
-          currentAudioObjectUrl = URL.createObjectURL(blob);
-
-          windowStartSec = sliceStart;
-          windowEndSec = sliceStart + sliceDuration;
-
-          cinemaAudio.srcObject = null;
-          cinemaAudio.src = currentAudioObjectUrl;
-          cinemaAudio.muted = false;
-          cinemaAudio.volume = parseFloat(document.getElementById('cinemaVolume').value);
-
-          const relativeOffset = Math.max(0, cinemaVideo.currentTime - windowStartSec);
-          cinemaAudio.currentTime = relativeOffset;
-
-          audioEngineBadge.classList.add('hidden');
-
-          // Only resume if the user did NOT pause or stop while buffering
-          if (userWantsPlaying && isHostingCinema) {
-            await cinemaVideo.play().catch(() => {});
-            await cinemaAudio.play().catch(() => {});
-          } else {
-            cinemaVideo.pause();
-            cinemaAudio.pause();
-            playPauseBtn.textContent = '▶ Play';
-          }
-
-          return true;
-        } catch (err) {
-          console.error('Audio window decode error:', err);
-          usesChunkedAudio = false;
-          const errMsg = err?.message || (typeof err === 'string' ? err : JSON.stringify(err));
-          audioEngineText.textContent = `⚠️ Audio decode error: ${errMsg}`;
-          setTimeout(() => audioEngineBadge.classList.add('hidden'), 5000);
-          return false;
-        } finally {
-          if (myJob === windowJobId) {
-            isExtractingWindow = false;
-          }
-        }
-      };
-
-      const resultPromise = ffmpegMutex.then(runJob, runJob);
-      ffmpegMutex = resultPromise.catch(() => {});
-      return resultPromise;
-    }
-
-    async function ensureAudioWindowForTimestamp(currentTime, isSeekJump = false) {
-      if (!usesChunkedAudio || !activeFileRef) return;
-
-      if (currentTime < windowStartSec || currentTime >= windowEndSec - 5) {
-        if (!isExtractingWindow) {
-          await loadAudioWindow(currentTime, isSeekJump);
-        }
-        return;
-      }
-
-      const expectedAudioTime = currentTime - windowStartSec;
-      if (cinemaAudio.readyState >= 2 && Math.abs(cinemaAudio.currentTime - expectedAudioTime) > 0.4) {
-        cinemaAudio.currentTime = expectedAudioTime;
-      }
-
-      if (!isExtractingWindow && (windowEndSec - currentTime) < PREFETCH_THRESHOLD_SEC) {
-        loadAudioWindow(Math.max(0, cinemaVideo.currentTime - 5), false);
-      }
-    }
-
     function handleLocalFileSelect(e) {
       const file = e.target.files[0];
       e.target.value = '';
       if (!file || !isRoomAuthorized) return;
 
-      // Unlock audio element & Web Audio context synchronously inside user file-picker gesture
       if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
-      cinemaAudio.muted = false;
-      cinemaAudio.play().catch(() => {});
 
       if (roomActiveHostId || isHostingCinema) {
         const queueId = Math.random().toString(36).substring(2, 10);
@@ -1460,29 +1157,9 @@
     async function startStreamingLocalFile(file) {
       cleanupLocalCinemaUI();
 
-      // 1. Scan file for multiple audio tracks BEFORE loading/streaming
-      const detectedTracks = await probeFileAudioTracks(file);
-      let chosenTrackIdx = 0;
-
-      if (detectedTracks.length > 1) {
-        const picked = await promptUserForAudioTrack(detectedTracks);
-        if (picked === null) return; // User clicked Cancel
-        chosenTrackIdx = picked;
-      }
-      selectedAudioStreamIndex = chosenTrackIdx;
-
-      const chosenMeta = detectedTracks[chosenTrackIdx];
-      selectedAudioIsStereoAAC = Boolean(
-        chosenMeta &&
-        chosenMeta.codec === 'aac' &&
-        /stereo|2\.0|2 ch/i.test(chosenMeta.label)
-      );
-
       isHostingCinema = true;
-      userWantsPlaying = true;
       roomActiveHostId = socket.id;
       currentCinemaMode = 'file';
-      activeFileRef = file;
 
       currentObjectUrl = URL.createObjectURL(file);
       cinemaVideo.srcObject = null;
@@ -1500,10 +1177,10 @@
           seekSlider.max = cinemaVideo.duration;
           durationLabel.textContent = formatTime(cinemaVideo.duration);
         }
-        await cinemaVideo.play();
+        await cinemaVideo.play().catch(() => {});
         playPauseBtn.textContent = '⏸ Pause';
 
-        setTimeout(async () => {
+        setTimeout(() => {
           const isMobileDevice = /Android|iPhone|iPad/i.test(navigator.userAgent);
           let videoCapture;
 
@@ -1515,7 +1192,6 @@
             relayCanvas.width = Math.round(vw * scale);
             relayCanvas.height = Math.round(vh * scale);
 
-            // Keep inside viewport at 1% opacity so Chrome's GPU compositor never skips painting
             relayCanvas.style.cssText = 'position:fixed;left:0;top:0;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:-1;';
             document.body.appendChild(relayCanvas);
             mobileRelayCanvas = relayCanvas;
@@ -1531,10 +1207,16 @@
                 mobileCanvasTimer = null;
                 return;
               }
-              if (cinemaVideo.readyState >= 2 && !isExtractingWindow) {
+              if (cinemaVideo.readyState >= 2 && !cinemaVideo.paused) {
                 ctx.drawImage(cinemaVideo, 0, 0, relayCanvas.width, relayCanvas.height);
               }
             }, 50);
+
+            // Attach native <video> audio for mobile WebRTC peers
+            const nativeAudioTrack = getNativeVideoAudioTrack();
+            if (nativeAudioTrack) {
+              videoCapture.addTrack(nativeAudioTrack);
+            }
           } else {
             videoCapture = cinemaVideo.captureStream
               ? cinemaVideo.captureStream(30)
@@ -1542,53 +1224,8 @@
           }
 
           localCinemaStream = videoCapture;
-
-          // Use native HTML5 audio ONLY on desktop single-track files where browser decodes audio natively
-          const hasNativeAudio =
-            !isMobileDevice &&
-            detectedTracks.length <= 1 &&
-            chosenTrackIdx === 0 &&
-            videoCapture.getAudioTracks().length > 0 &&
-            (!cinemaVideo.audioTracks || cinemaVideo.audioTracks.length > 0);
-
-          if (hasNativeAudio) {
-            usesChunkedAudio = false;
-            cinemaVideo.muted = false;
-            cinemaVideo.volume = parseFloat(document.getElementById('cinemaVolume').value);
-            broadcastCinemaStream('file');
-            return;
-          }
-
-          // Route audio via FFmpeg + Web Audio API
-          cinemaVideo.muted = true;
-          usesChunkedAudio = true;
           broadcastCinemaStream('file');
-
-          const ok = await loadAudioWindow(cinemaVideo.currentTime, false);
-          if (ok && isHostingCinema) {
-            const webAudioTrack = getCapturedAudioTrackFromElement();
-            if (webAudioTrack) {
-              localCinemaStream.addTrack(webAudioTrack);
-              knownPeers.forEach(peerId => {
-                const pc = cinemaPeers[peerId];
-                if (pc && pc.signalingState !== 'closed') {
-                  pc.addTrack(webAudioTrack, localCinemaStream);
-                  pc.createOffer()
-                    .then(offer => pc.setLocalDescription(offer))
-                    .then(() => {
-                      socket.emit('offer', {
-                        target: peerId,
-                        sdp: pc.localDescription,
-                        mediaType: 'cinema'
-                      });
-                    });
-                } else {
-                  createPeer(peerId, 'cinema', true);
-                }
-              });
-            }
-          }
-        }, 400);
+        }, 300);
       };
     }
 
@@ -1596,7 +1233,6 @@
     document.getElementById('localFileInputBar').addEventListener('change', handleLocalFileSelect);
     document.getElementById('localFileInputDrawer').addEventListener('change', handleLocalFileSelect);
 
-    let lastWindowCheckSec = 0;
     let lastTimeBroadcastMs = 0;
     cinemaVideo.addEventListener('timeupdate', () => {
       if (!isHostingCinema) return;
@@ -1618,11 +1254,6 @@
           ended: cinemaVideo.ended
         });
       }
-
-      if (usesChunkedAudio && Math.abs(now - lastWindowCheckSec) >= 2) {
-        lastWindowCheckSec = now;
-        ensureAudioWindowForTimestamp(now, false);
-      }
     });
 
     cinemaVideo.addEventListener('ended', () => {
@@ -1633,9 +1264,6 @@
         seekSlider.value = cinemaVideo.duration;
         currentTimeLabel.textContent = formatTime(cinemaVideo.duration);
         durationLabel.textContent = formatTime(cinemaVideo.duration);
-      }
-      if (isHostingCinema && usesChunkedAudio && cinemaAudio.src) {
-        cinemaAudio.pause();
       }
       socket.emit('cinema-time', {
         currentTime: cinemaVideo.duration || cinemaVideo.currentTime,
@@ -1658,10 +1286,6 @@
         }
       }
 
-      if (isHostingCinema && usesChunkedAudio && cinemaAudio.src) {
-        cinemaAudio.currentTime = Math.max(0, cinemaVideo.currentTime - windowStartSec);
-        cinemaAudio.play().catch(() => {});
-      }
       if (!isRemoteSyncing) {
         socket.emit('cinema-sync', { action: 'play', currentTime: cinemaVideo.currentTime });
       }
@@ -1670,25 +1294,12 @@
     cinemaVideo.addEventListener('pause', () => {
       if (cinemaVideo.ended) return;
       playPauseBtn.textContent = '▶ Play';
-      if (isHostingCinema && usesChunkedAudio && cinemaAudio.src) {
-        cinemaAudio.pause();
-      }
       if (!isRemoteSyncing) {
         socket.emit('cinema-sync', { action: 'pause', currentTime: cinemaVideo.currentTime });
       }
     });
 
-    cinemaVideo.addEventListener('seeked', async () => {
-      if (isHostingCinema && usesChunkedAudio) {
-        await ensureAudioWindowForTimestamp(cinemaVideo.currentTime, true);
-        if (userWantsPlaying && isHostingCinema) {
-          await cinemaVideo.play().catch(() => {});
-          await cinemaAudio.play().catch(() => {});
-        } else {
-          cinemaVideo.pause();
-          cinemaAudio.pause();
-        }
-      }
+    cinemaVideo.addEventListener('seeked', () => {
       if (!isRemoteSyncing) {
         socket.emit('cinema-sync', { action: 'seek', currentTime: cinemaVideo.currentTime });
       }
@@ -1699,14 +1310,8 @@
       if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
       const cinemaVol = parseFloat(document.getElementById('cinemaVolume').value);
       if (isHostingCinema) {
-        if (usesChunkedAudio && cinemaAudio.src) {
-          cinemaAudio.muted = false;
-          cinemaAudio.volume = cinemaVol;
-          if (!cinemaVideo.paused) cinemaAudio.play().catch(() => {});
-        } else {
-          cinemaVideo.muted = false;
-          cinemaVideo.volume = cinemaVol;
-        }
+        cinemaVideo.muted = false;
+        cinemaVideo.volume = cinemaVol;
       } else if (cinemaAudio.srcObject) {
         cinemaAudio.muted = false;
         cinemaAudio.volume = cinemaVol;
@@ -1775,24 +1380,27 @@
       });
     }
 
+    stopStreamBtn.addEventListener('click', () => {
+      socket.emit('cinema-status', { active: false });
+    });
+
+    const cinemaVolumeSlider = document.getElementById('cinemaVolume');
+    const fsCinemaVolumeSlider = document.getElementById('fsCinemaVolume');
+    const fsMovieVolPct = document.getElementById('fsMovieVolPct');
     async function refreshCinemaCaptureTracks() {
       if (!isHostingCinema || currentCinemaMode !== 'file') return;
+      if (/Android|iPhone|iPad/i.test(navigator.userAgent)) return;
 
       const freshCapture = cinemaVideo.captureStream
-        ? cinemaVideo.captureStream()
-        : cinemaVideo.mozCaptureStream();
+        ? cinemaVideo.captureStream(30)
+        : cinemaVideo.mozCaptureStream(30);
 
       const freshVideoTrack = freshCapture.getVideoTracks()[0];
       if (!freshVideoTrack) return;
 
       const tracksToUse = [freshVideoTrack];
-      if (usesChunkedAudio) {
-        const webAudioTrack = getCapturedAudioTrackFromElement();
-        if (webAudioTrack) tracksToUse.push(webAudioTrack);
-      } else {
-        const freshAudioTrack = freshCapture.getAudioTracks()[0];
-        if (freshAudioTrack) tracksToUse.push(freshAudioTrack);
-      }
+      const freshAudioTrack = freshCapture.getAudioTracks()[0];
+      if (freshAudioTrack) tracksToUse.push(freshAudioTrack);
 
       localCinemaStream = new MediaStream(tracksToUse);
 
@@ -1806,9 +1414,8 @@
           if (videoSender && freshVideoTrack) {
             await videoSender.replaceTrack(freshVideoTrack).catch(() => {});
           }
-          const newAudio = localCinemaStream.getAudioTracks()[0];
-          if (audioSender && newAudio) {
-            await audioSender.replaceTrack(newAudio).catch(() => {});
+          if (audioSender && freshAudioTrack) {
+            await audioSender.replaceTrack(freshAudioTrack).catch(() => {});
           }
         } else {
           createPeer(peerId, 'cinema', true);
@@ -1818,15 +1425,8 @@
 
     function cleanupLocalCinemaUI() {
       isHostingCinema = false;
-      userWantsPlaying = false;
       didVideoEnd = false;
       currentCinemaMode = null;
-      activeFileRef = null;
-      usesChunkedAudio = false;
-      windowStartSec = 0;
-      windowEndSec = 0;
-      isExtractingWindow = false;
-      windowJobId++;
 
       if (mobileCanvasTimer) {
         clearInterval(mobileCanvasTimer);
@@ -1845,10 +1445,6 @@
         URL.revokeObjectURL(currentObjectUrl);
         currentObjectUrl = null;
       }
-      if (currentAudioObjectUrl) {
-        URL.revokeObjectURL(currentAudioObjectUrl);
-        currentAudioObjectUrl = null;
-      }
       Object.values(cinemaPeers).forEach(pc => pc.close());
       for (const k in cinemaPeers) delete cinemaPeers[k];
 
@@ -1859,25 +1455,16 @@
       cinemaAudio.srcObject = null;
       cinemaAudio.removeAttribute('src');
       customPlayerBar.classList.add('hidden');
-      audioEngineBadge.classList.add('hidden');
 
       stagePlaceholder.classList.remove('hidden');
       stopStreamBtn.classList.add('hidden');
     }
 
-    stopStreamBtn.addEventListener('click', () => {
-      socket.emit('cinema-status', { active: false });
-    });
-
-    const cinemaVolumeSlider = document.getElementById('cinemaVolume');
-    const fsCinemaVolumeSlider = document.getElementById('fsCinemaVolume');
-    const fsMovieVolPct = document.getElementById('fsMovieVolPct');
-
     function applyCinemaVolume(vol) {
       cinemaVolumeSlider.value = vol;
       fsCinemaVolumeSlider.value = vol;
       fsMovieVolPct.textContent = `${Math.round(vol * 100)}%`;
-      if (isHostingCinema && !usesChunkedAudio) {
+      if (isHostingCinema) {
         cinemaVideo.muted = false;
         cinemaVideo.volume = vol;
       } else {
