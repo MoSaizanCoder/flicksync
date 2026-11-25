@@ -7,9 +7,13 @@ const path = require('path');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  maxHttpBufferSize: 1e5, // 100 KB max signaling payload to prevent memory DoS
-  pingTimeout: 60000,
-  pingInterval: 25000
+  maxHttpBufferSize: 1e5,
+  pingTimeout: 20000,
+  pingInterval: 10000,
+  connectionStateRecovery: {
+    maxDisconnectionDuration: 2 * 60 * 1000,
+    skipMiddlewares: true
+  }
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
@@ -53,10 +57,14 @@ function sanitizeRoomId(raw) {
 }
 
 function isAuthorizedInRoom(socket, targetId = null) {
-  if (!socket.authorizedRoomId) return false;
+  if (!socket.authorizedRoomId || socket.disconnected) return false;
   const room = io.sockets.adapter.rooms.get(socket.authorizedRoomId);
   if (!room || !room.has(socket.id)) return false;
-  if (targetId !== null && !room.has(targetId)) return false;
+  if (targetId !== null) {
+    if (!room.has(targetId)) return false;
+    const targetSocket = io.sockets.sockets.get(targetId);
+    if (!targetSocket || targetSocket.disconnected) return false;
+  }
   return true;
 }
 
@@ -95,6 +103,27 @@ io.on('connection', (socket) => {
     // Leave any previous room cleanly
     if (socket.authorizedRoomId && socket.authorizedRoomId !== roomId) {
       socket.leave(socket.authorizedRoomId);
+    }
+
+    const clientId = typeof payload === 'object' && typeof payload?.clientId === 'string'
+      ? payload.clientId.trim().slice(0, 64)
+      : '';
+    socket.clientId = clientId;
+
+    // Evict any stale ghost socket from the exact same browser tab before reading room members
+    const existingRoom = io.sockets.adapter.rooms.get(roomId);
+    if (existingRoom && clientId) {
+      for (const oldSocketId of Array.from(existingRoom)) {
+        if (oldSocketId === socket.id) continue;
+        const oldSock = io.sockets.sockets.get(oldSocketId);
+        if (!oldSock || oldSock.disconnected || oldSock.clientId === clientId) {
+          if (oldSock) {
+            oldSock.leave(roomId);
+            oldSock.authorizedRoomId = null;
+          }
+          socket.to(roomId).emit('user-left', oldSocketId);
+        }
+      }
     }
 
     const room = io.sockets.adapter.rooms.get(roomId);

@@ -359,6 +359,10 @@
   <script>
     const socket = io({ autoConnect: false });
 
+    const TAB_CLIENT_ID = sessionStorage.getItem('flicksync_tab_id') ||
+      (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now());
+    sessionStorage.setItem('flicksync_tab_id', TAB_CLIENT_ID);
+
     const pathParts = window.location.pathname.split('/');
     const urlRoomId = pathParts[1] === 'room' && pathParts[2]
       ? pathParts[2].replace(/[^a-zA-Z0-9_-]/g, '')
@@ -430,6 +434,7 @@
     syncProfileBadge();
 
     function stopCameraAndMicCompletely() {
+      // Stop tracks on localCallStream
       if (localCallStream) {
         localCallStream.getTracks().forEach(track => {
           track.enabled = false;
@@ -437,10 +442,27 @@
         });
         localCallStream = null;
       }
+      // Also stop any tracks still attached to the local <video> element or RTCPeerConnection senders
       const localCamEl = document.getElementById('localCamVideo');
-      if (localCamEl) {
+      if (localCamEl && localCamEl.srcObject) {
+        localCamEl.srcObject.getTracks().forEach(track => {
+          track.enabled = false;
+          track.stop();
+        });
         localCamEl.srcObject = null;
       }
+      Object.values(callPeers).forEach(pc => {
+        pc.getSenders().forEach(sender => {
+          if (sender.track) {
+            sender.track.enabled = false;
+            sender.track.stop();
+          }
+        });
+        pc.close();
+      });
+      for (const k in callPeers) delete callPeers[k];
+
+      pendingCallUsers = [];
       mediaInitialized = false;
     }
 
@@ -448,11 +470,10 @@
       if (document.body.classList.contains('theater-fullscreen')) {
         toggleTheaterFullscreen(false);
       }
+      focusedCameraPeerId = null;
       cleanupLocalCinemaUI();
       stopCameraAndMicCompletely();
 
-      Object.values(callPeers).forEach(pc => pc.close());
-      for (const k in callPeers) delete callPeers[k];
       for (const id of Object.keys(remoteCallVideos)) {
         const tile = document.getElementById(`tile-${id}`);
         if (tile) tile.remove();
@@ -464,6 +485,7 @@
 
       isRoomAuthorized = false;
       roomActiveHostId = null;
+      roomId = null;
       if (socket.connected) {
         socket.disconnect();
       }
@@ -504,7 +526,7 @@
       document.body.classList.remove('in-lobby');
 
       if (socket.connected) {
-        socket.emit('join-room', { roomId, displayName: profileName });
+        socket.emit('join-room', { roomId, displayName: profileName, clientId: TAB_CLIENT_ID });
       } else {
         socket.connect();
       }
@@ -632,13 +654,16 @@
     socket.connect();
     socket.on('connect', () => {
       if (roomId) {
-        socket.emit('join-room', { roomId, displayName: profileName });
+        socket.emit('join-room', { roomId, displayName: profileName, clientId: TAB_CLIENT_ID });
       }
     });
 
     let pendingCallUsers = [];
 
     socket.on('join-success', async ({ isPasswordLocked: locked, peerNames }) => {
+      if (document.body.classList.contains('in-lobby') || !roomId) {
+        return;
+      }
       isRoomAuthorized = true;
       unlockRoomModal.classList.add('hidden');
       if (locked) markPasswordLockedUI();
@@ -666,7 +691,9 @@
         mediaInitialized = true;
 
         if (pendingCallUsers.length > 0) {
+          knownPeers.clear();
           pendingCallUsers.forEach(userId => {
+            if (userId === socket.id) return;
             knownPeers.add(userId);
             createPeer(userId, 'call', true);
           });
@@ -678,21 +705,36 @@
     });
 
     socket.on('all-users', (users) => {
-      if (!mediaInitialized) {
-        pendingCallUsers = users;
-        users.forEach(userId => knownPeers.add(userId));
-        updatePeerBadge();
-        return;
-      }
-      users.forEach(userId => {
-        knownPeers.add(userId);
-        createPeer(userId, 'call', true);
-      });
-      updatePeerBadge();
-      if (isRoomAuthorized && users.length > 0) {
-        socket.emit('request-cinema');
-      }
-    });
+   const validUsers = users.filter(id => id && id !== socket.id);
+
+   // Remove any stale camera tiles from a previous reconnect
+   Array.from(knownPeers).forEach(existingId => {
+     if (!validUsers.includes(existingId)) {
+       knownPeers.delete(existingId);
+       if (callPeers[existingId]) { callPeers[existingId].close(); delete callPeers[existingId]; }
+       if (cinemaPeers[existingId]) { cinemaPeers[existingId].close(); delete cinemaPeers[existingId]; }
+       const staleTile = document.getElementById(`tile-${existingId}`);
+       if (staleTile) staleTile.remove();
+       delete remoteCallVideos[existingId];
+       delete peerDisplayNames[existingId];
+     }
+   });
+
+   if (!mediaInitialized) {
+     pendingCallUsers = validUsers;
+     validUsers.forEach(userId => knownPeers.add(userId));
+     updatePeerBadge();
+     return;
+   }
+   validUsers.forEach(userId => {
+     knownPeers.add(userId);
+     createPeer(userId, 'call', true);
+   });
+   updatePeerBadge();
+   if (isRoomAuthorized && validUsers.length > 0) {
+     socket.emit('request-cinema');
+   }
+ });
 
 
     // Live Chat + Auto-Clickable Links (XSS-Safe DOM Parser)
@@ -1053,17 +1095,25 @@
 
       if (mediaType === 'call') {
         pc.onconnectionstatechange = () => {
-          if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+          if (pc.connectionState === 'disconnected') {
+            setTimeout(() => {
+              if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+                pc.restartIce();
+              }
+            }, 2500);
+          } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
             const staleTile = document.getElementById(`tile-${targetId}`);
             if (staleTile) staleTile.remove();
             delete remoteCallVideos[targetId];
+            knownPeers.delete(targetId);
+            updatePeerBadge();
           }
         };
       }
 
       pc.ontrack = (e) => {
         const remoteStream = e.streams[0] || new MediaStream([e.track]);
-        if (mediaType === 'call') {
+        if (mediaType === 'call' && targetId !== socket.id) {
           renderRemoteCallVideo(targetId, remoteStream);
         } else if (mediaType === 'cinema' && !isHostingCinema) {
           focusedCameraPeerId = null;
@@ -1114,7 +1164,7 @@
     socket.on('user-joined', (payload) => {
       const userId = typeof payload === 'string' ? payload : payload?.userId;
       const displayName = typeof payload === 'object' ? payload?.displayName : '';
-      if (!userId) return;
+      if (!userId || userId === socket.id) return;
 
       knownPeers.add(userId);
       if (displayName) {
@@ -1126,6 +1176,7 @@
     });
 
     socket.on('request-cinema', ({ requesterId }) => {
+      if (!requesterId || requesterId === socket.id) return;
       knownPeers.add(requesterId);
       updatePeerBadge();
       if (isHostingCinema && localCinemaStream) {
@@ -1212,6 +1263,7 @@
     });
 
     socket.on('offer', async ({ sdp, caller, mediaType }) => {
+      if (!caller || caller === socket.id) return;
       knownPeers.add(caller);
       updatePeerBadge();
       const peerStore = mediaType === 'call' ? callPeers : cinemaPeers;
