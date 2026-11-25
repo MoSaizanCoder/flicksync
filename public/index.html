@@ -478,6 +478,7 @@
       for (const k in callPeers) delete callPeers[k];
 
       pendingCallUsers = [];
+      mediaInitPromise = null;
       mediaInitialized = false;
     }
 
@@ -564,6 +565,7 @@
     let audioCtx = null;
     let videoAudioSourceNode = null;
     let videoAudioDestNode = null;
+    let localHostGainNode = null;
     let mobileCanvasTimer = null;
     let mobileRelayCanvas = null;
 
@@ -675,6 +677,75 @@
     });
 
     let pendingCallUsers = [];
+    let mediaInitPromise = null;
+
+    async function ensureLocalCallMediaReady() {
+      if (localCallStream && localCallStream.getTracks().length > 0) {
+        return localCallStream;
+      }
+      if (mediaInitPromise) {
+        return mediaInitPromise;
+      }
+
+      mediaInitPromise = (async () => {
+        try {
+          localCallStream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 640 }, height: { ideal: 360 } },
+            audio: { echoCancellation: true, noiseSuppression: true }
+          });
+        } catch (err) {
+          console.warn('Video+Audio failed, retrying Audio-only:', err);
+          try {
+            localCallStream = await navigator.mediaDevices.getUserMedia({
+              video: false,
+              audio: { echoCancellation: true, noiseSuppression: true }
+            });
+          } catch (audioErr) {
+            console.warn('Camera/Mic blocked or unavailable:', audioErr);
+            localCallStream = new MediaStream();
+          }
+        }
+
+        const localCamEl = document.getElementById('localCamVideo');
+        if (localCamEl) {
+          localCamEl.srcObject = localCallStream;
+        }
+        syncProfileBadge();
+        syncLocalMediaButtonStates();
+        mediaInitialized = true;
+        mediaInitPromise = null;
+
+        // If any call peer connection was created while getUserMedia was still opening,
+        // attach the live camera/mic tracks now and renegotiate!
+        for (const [peerId, pc] of Object.entries(callPeers)) {
+          if (!pc || pc.signalingState === 'closed') continue;
+          let addedNewTrack = false;
+          localCallStream.getTracks().forEach((track) => {
+            const alreadySending = pc.getSenders().some((s) => s.track && s.track.kind === track.kind);
+            if (!alreadySending) {
+              pc.addTrack(track, localCallStream);
+              addedNewTrack = true;
+            }
+          });
+          if (addedNewTrack) {
+            pc.createOffer()
+              .then((offer) => pc.setLocalDescription(offer))
+              .then(() => {
+                socket.emit('offer', {
+                  target: peerId,
+                  sdp: pc.localDescription,
+                  mediaType: 'call'
+                });
+              })
+              .catch(() => {});
+          }
+        }
+
+        return localCallStream;
+      })();
+
+      return mediaInitPromise;
+    }
 
     socket.on('join-success', async ({ isPasswordLocked: locked, peerNames }) => {
       if (document.body.classList.contains('in-lobby') || !roomId) {
@@ -692,65 +763,53 @@
         });
       }
 
-      if (!mediaInitialized) {
-        try {
-          localCallStream = await navigator.mediaDevices.getUserMedia({
-            video: { width: { ideal: 640 }, height: { ideal: 360 } },
-            audio: { echoCancellation: true, noiseSuppression: true }
-          });
-          document.getElementById('localCamVideo').srcObject = localCallStream;
-          syncProfileBadge();
-        } catch (err) {
-          console.warn('Camera/Mic blocked or unavailable:', err);
-          localCallStream = new MediaStream();
-        }
-        mediaInitialized = true;
+      await ensureLocalCallMediaReady();
 
-        if (pendingCallUsers.length > 0) {
-          knownPeers.clear();
-          pendingCallUsers.forEach(userId => {
-            if (userId === socket.id) return;
-            knownPeers.add(userId);
-            createPeer(userId, 'call', true);
-          });
-          pendingCallUsers = [];
-          updatePeerBadge();
-          socket.emit('request-cinema');
-        }
+      if (pendingCallUsers.length > 0) {
+        knownPeers.clear();
+        pendingCallUsers.forEach((userId) => {
+          if (userId === socket.id) return;
+          knownPeers.add(userId);
+          createPeer(userId, 'call', true);
+        });
+        pendingCallUsers = [];
+        updatePeerBadge();
+        socket.emit('request-cinema');
       }
     });
 
-    socket.on('all-users', (users) => {
-   const validUsers = users.filter(id => id && id !== socket.id);
+    socket.on('all-users', async (users) => {
+      const validUsers = users.filter((id) => id && id !== socket.id);
 
-   // Remove any stale camera tiles from a previous reconnect
-   Array.from(knownPeers).forEach(existingId => {
-     if (!validUsers.includes(existingId)) {
-       knownPeers.delete(existingId);
-       if (callPeers[existingId]) { callPeers[existingId].close(); delete callPeers[existingId]; }
-       if (cinemaPeers[existingId]) { cinemaPeers[existingId].close(); delete cinemaPeers[existingId]; }
-       const staleTile = document.getElementById(`tile-${existingId}`);
-       if (staleTile) staleTile.remove();
-       delete remoteCallVideos[existingId];
-       delete peerDisplayNames[existingId];
-     }
-   });
+      Array.from(knownPeers).forEach((existingId) => {
+        if (!validUsers.includes(existingId)) {
+          knownPeers.delete(existingId);
+          if (callPeers[existingId]) { callPeers[existingId].close(); delete callPeers[existingId]; }
+          if (cinemaPeers[existingId]) { cinemaPeers[existingId].close(); delete cinemaPeers[existingId]; }
+          const staleTile = document.getElementById(`tile-${existingId}`);
+          if (staleTile) staleTile.remove();
+          delete remoteCallVideos[existingId];
+          delete peerDisplayNames[existingId];
+        }
+      });
 
-   if (!mediaInitialized) {
-     pendingCallUsers = validUsers;
-     validUsers.forEach(userId => knownPeers.add(userId));
-     updatePeerBadge();
-     return;
-   }
-   validUsers.forEach(userId => {
-     knownPeers.add(userId);
-     createPeer(userId, 'call', true);
-   });
-   updatePeerBadge();
-   if (isRoomAuthorized && validUsers.length > 0) {
-     socket.emit('request-cinema');
-   }
- });
+      if (!mediaInitialized) {
+        pendingCallUsers = validUsers;
+        validUsers.forEach((userId) => knownPeers.add(userId));
+        updatePeerBadge();
+        await ensureLocalCallMediaReady();
+        return;
+      }
+
+      validUsers.forEach((userId) => {
+        knownPeers.add(userId);
+        createPeer(userId, 'call', true);
+      });
+      updatePeerBadge();
+      if (isRoomAuthorized && validUsers.length > 0) {
+        socket.emit('request-cinema');
+      }
+    });
 
 
     // Live Chat + Auto-Clickable Links (XSS-Safe DOM Parser)
@@ -982,7 +1041,7 @@
       setTimeout(() => queueToast.classList.add('hidden'), 3200);
     }
 
-    function getNativeVideoAudioTrack() {
+    function ensureHostCinemaAudioGraph() {
       if (!audioCtx) {
         const AudioContextClass = window.AudioContext || window.webkitAudioContext;
         audioCtx = new AudioContextClass();
@@ -990,7 +1049,16 @@
       if (!videoAudioSourceNode) {
         videoAudioSourceNode = audioCtx.createMediaElementSource(cinemaVideo);
         videoAudioDestNode = audioCtx.createMediaStreamDestination();
-        videoAudioSourceNode.connect(audioCtx.destination);
+        localHostGainNode = audioCtx.createGain();
+
+        const currentSliderVol = parseFloat(document.getElementById('cinemaVolume').value);
+        localHostGainNode.gain.value = isFinite(currentSliderVol) ? currentSliderVol : 1;
+
+        // Branch 1: Host's own speakers (controlled by host's Movie Vol slider)
+        videoAudioSourceNode.connect(localHostGainNode);
+        localHostGainNode.connect(audioCtx.destination);
+
+        // Branch 2: WebRTC stream to viewers (always 100% full volume)
         videoAudioSourceNode.connect(videoAudioDestNode);
       }
       if (audioCtx.state === 'suspended') {
@@ -1281,6 +1349,9 @@
 
     socket.on('offer', async ({ sdp, caller, mediaType }) => {
       if (!caller || caller === socket.id) return;
+      if (mediaType === 'call' && !mediaInitialized) {
+        await ensureLocalCallMediaReady();
+      }
       knownPeers.add(caller);
       updatePeerBadge();
       const peerStore = mediaType === 'call' ? callPeers : cinemaPeers;
@@ -1540,6 +1611,10 @@
           seekSlider.max = cinemaVideo.duration;
           durationLabel.textContent = formatTime(cinemaVideo.duration);
         }
+        cinemaVideo.muted = false;
+        cinemaVideo.volume = 1;
+        const cleanAudioTrack = ensureHostCinemaAudioGraph();
+
         await cinemaVideo.play().catch(() => {});
         playPauseBtn.textContent = '⏸ Pause';
 
@@ -1574,16 +1649,15 @@
                 ctx.drawImage(cinemaVideo, 0, 0, relayCanvas.width, relayCanvas.height);
               }
             }, 50);
-
-            // Attach native <video> audio for mobile WebRTC peers
-            const nativeAudioTrack = getNativeVideoAudioTrack();
-            if (nativeAudioTrack) {
-              videoCapture.addTrack(nativeAudioTrack);
-            }
           } else {
-            videoCapture = cinemaVideo.captureStream
+            const rawCapture = cinemaVideo.captureStream
               ? cinemaVideo.captureStream(30)
               : cinemaVideo.mozCaptureStream(30);
+            videoCapture = new MediaStream(rawCapture.getVideoTracks());
+          }
+
+          if (cleanAudioTrack) {
+            videoCapture.addTrack(cleanAudioTrack);
           }
 
           localCinemaStream = videoCapture;
@@ -1674,7 +1748,8 @@
       const cinemaVol = parseFloat(document.getElementById('cinemaVolume').value);
       if (isHostingCinema) {
         cinemaVideo.muted = false;
-        cinemaVideo.volume = cinemaVol;
+        cinemaVideo.volume = 1;
+        if (localHostGainNode) localHostGainNode.gain.value = cinemaVol;
       } else if (cinemaAudio.srcObject) {
         cinemaAudio.muted = false;
         cinemaAudio.volume = cinemaVol;
@@ -1844,7 +1919,10 @@
 
       if (isHostingCinema) {
         cinemaVideo.muted = false;
-        cinemaVideo.volume = safeVol;
+        cinemaVideo.volume = 1;
+        if (localHostGainNode) {
+          localHostGainNode.gain.value = safeVol;
+        }
       }
     }
 
@@ -1873,20 +1951,89 @@
     const toggleMicBtn = document.getElementById('toggleMicBtn');
     const toggleCamBtn = document.getElementById('toggleCamBtn');
 
-    toggleMicBtn.addEventListener('click', () => {
+    function syncLocalMediaButtonStates() {
       const audioTrack = localCallStream?.getAudioTracks()[0];
-      if (!audioTrack) return;
-      audioTrack.enabled = !audioTrack.enabled;
-      toggleMicBtn.textContent = audioTrack.enabled ? '🎤 Mic On' : '🔇 Mic Muted';
-      toggleMicBtn.classList.toggle('bg-rose-600', !audioTrack.enabled);
+      const micEnabled = Boolean(audioTrack && audioTrack.enabled);
+      toggleMicBtn.textContent = micEnabled ? '🎤 Mic On' : '🔇 Mic Muted';
+      toggleMicBtn.classList.toggle('bg-rose-600', !micEnabled);
+
+      const videoTrack = localCallStream?.getVideoTracks()[0];
+      const camEnabled = Boolean(videoTrack && videoTrack.enabled);
+      toggleCamBtn.textContent = camEnabled ? '📷 Cam On' : '🚫 Cam Off';
+      toggleCamBtn.classList.toggle('bg-rose-600', !camEnabled);
+    }
+
+    toggleMicBtn.addEventListener('click', async () => {
+      if (!isRoomAuthorized) return;
+      await ensureLocalCallMediaReady();
+      let audioTrack = localCallStream?.getAudioTracks()[0];
+
+      if (!audioTrack) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: true }
+          });
+          audioTrack = stream.getAudioTracks()[0];
+          if (audioTrack) {
+            if (!localCallStream) localCallStream = new MediaStream();
+            localCallStream.addTrack(audioTrack);
+            for (const [peerId, pc] of Object.entries(callPeers)) {
+              const sender = pc.getSenders().find((s) => s.track?.kind === 'audio');
+              if (sender) {
+                await sender.replaceTrack(audioTrack).catch(() => {});
+              } else {
+                pc.addTrack(audioTrack, localCallStream);
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                socket.emit('offer', { target: peerId, sdp: pc.localDescription, mediaType: 'call' });
+              }
+            }
+          }
+        } catch (err) {
+          showToast('Microphone permission denied or unavailable.');
+          return;
+        }
+      } else {
+        audioTrack.enabled = !audioTrack.enabled;
+      }
+      syncLocalMediaButtonStates();
     });
 
-    toggleCamBtn.addEventListener('click', () => {
-      const videoTrack = localCallStream?.getVideoTracks()[0];
-      if (!videoTrack) return;
-      videoTrack.enabled = !videoTrack.enabled;
-      toggleCamBtn.textContent = videoTrack.enabled ? '📷 Cam On' : '🚫 Cam Off';
-      toggleCamBtn.classList.toggle('bg-rose-600', !videoTrack.enabled);
+    toggleCamBtn.addEventListener('click', async () => {
+      if (!isRoomAuthorized) return;
+      await ensureLocalCallMediaReady();
+      let videoTrack = localCallStream?.getVideoTracks()[0];
+
+      if (!videoTrack) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 640 }, height: { ideal: 360 } }
+          });
+          videoTrack = stream.getVideoTracks()[0];
+          if (videoTrack) {
+            if (!localCallStream) localCallStream = new MediaStream();
+            localCallStream.addTrack(videoTrack);
+            document.getElementById('localCamVideo').srcObject = localCallStream;
+            for (const [peerId, pc] of Object.entries(callPeers)) {
+              const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+              if (sender) {
+                await sender.replaceTrack(videoTrack).catch(() => {});
+              } else {
+                pc.addTrack(videoTrack, localCallStream);
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                socket.emit('offer', { target: peerId, sdp: pc.localDescription, mediaType: 'call' });
+              }
+            }
+          }
+        } catch (err) {
+          showToast('Camera permission denied or unavailable.');
+          return;
+        }
+      } else {
+        videoTrack.enabled = !videoTrack.enabled;
+      }
+      syncLocalMediaButtonStates();
     });
 
     document.getElementById('newRoomBtn').addEventListener('click', () => {
