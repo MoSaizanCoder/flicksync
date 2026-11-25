@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/styles.css" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" crossorigin="anonymous"></script>
   <script src="/socket.io/socket.io.js"></script>
+  <script src="/floating-pip.js"></script>
 </head>
 <body class="min-h-screen flex flex-col font-sans">
 
@@ -28,6 +29,9 @@
       </button>
       <button id="leaveRoomBtn" class="bg-rose-600 hover:bg-rose-500 text-white text-xs font-medium px-3 py-2 rounded-lg transition">
         🚪 Leave
+      </button>
+      <button id="pipCamerasBtn" class="hidden bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium px-3 py-2 rounded-lg transition">
+        🪟 Float Cameras
       </button>
       <button id="copyLinkBtn" class="bg-indigo-600 hover:bg-indigo-500 text-xs font-medium px-3 py-2 rounded-lg transition">
         Copy Invite Link
@@ -427,6 +431,17 @@
       }
     }
 
+    if (window.FlickSyncFloatingPiP) {
+      window.FlickSyncFloatingPiP.init({
+        getLocalCallStream: () => localCallStream,
+        getRemoteCallVideos: () => remoteCallVideos,
+        getPeerDisplayNames: () => peerDisplayNames,
+        getProfileName: () => profileName,
+        showToast,
+        onStopShare: () => socket.emit('cinema-status', { active: false })
+      });
+    }
+
     const initialLobbyNameInput = document.getElementById('lobbyNameInput');
     const initialLobbyRoomInput = document.getElementById('lobbyRoomIdInput');
     if (initialLobbyNameInput) initialLobbyNameInput.value = profileName;
@@ -467,6 +482,7 @@
     }
 
     function leaveCurrentRoomToLobby(prefillRoomId = '') {
+      if (window.FlickSyncFloatingPiP) window.FlickSyncFloatingPiP.close();
       if (document.body.classList.contains('theater-fullscreen')) {
         toggleTheaterFullscreen(false);
       }
@@ -1684,14 +1700,15 @@
       }
       try {
         const screenStream = await navigator.mediaDevices.getDisplayMedia({
-          video: { frameRate: { ideal: 30, max: 30 } },
-          audio: {
-            echoCancellation: false,
-            noiseSuppression: false,
-            autoGainControl: false
-          },
-          systemAudio: 'include'
-        });
+        video: { frameRate: { ideal: 30, max: 30 } },
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false
+        },
+        systemAudio: 'include',
+        selfBrowserSurface: 'exclude'
+      });
 
         cleanupLocalCinemaUI();
         clearFocusedCameraOnStage();
@@ -1708,6 +1725,10 @@
         await cinemaVideo.play();
 
         broadcastCinemaStream('screen');
+        if (window.FlickSyncFloatingPiP) {
+          window.FlickSyncFloatingPiP.showButton();
+          await window.FlickSyncFloatingPiP.open();
+        }
 
         screenStream.getVideoTracks()[0].onended = () => {
           socket.emit('cinema-status', { active: false });
@@ -1774,6 +1795,8 @@
       isHostingCinema = false;
       didVideoEnd = false;
       currentCinemaMode = null;
+
+      if (window.FlickSyncFloatingPiP) window.FlickSyncFloatingPiP.close();
 
       if (mobileCanvasTimer) {
         clearInterval(mobileCanvasTimer);
