@@ -52,19 +52,6 @@ function sanitizeRoomId(raw) {
   return cleaned.length >= 3 && cleaned.length <= 32 ? cleaned : null;
 }
 
-function sanitizeHttpUrl(raw) {
-  if (typeof raw !== 'string') return null;
-  const trimmed = raw.trim();
-  if (trimmed.length === 0 || trimmed.length > 2048) return null;
-  try {
-    const parsed = new URL(trimmed);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
-    return parsed.href;
-  } catch {
-    return null;
-  }
-}
-
 function isAuthorizedInRoom(socket, targetId = null) {
   if (!socket.authorizedRoomId) return false;
   const room = io.sockets.adapter.rooms.get(socket.authorizedRoomId);
@@ -81,6 +68,10 @@ io.on('connection', (socket) => {
     const rawRoomId = typeof payload === 'string' ? payload : payload?.roomId;
     const providedPassword = typeof payload === 'object' ? payload?.password : '';
     const roomId = sanitizeRoomId(rawRoomId);
+    const rawName = typeof payload === 'object' ? payload?.displayName : '';
+    const cleanName = typeof rawName === 'string'
+      ? rawName.trim().replace(/\s+/g, ' ').slice(0, 32)
+      : '';
 
     if (!roomId) {
       socket.emit('join-error', { code: 'INVALID_ROOM', message: 'Invalid room ID.' });
@@ -112,9 +103,18 @@ io.on('connection', (socket) => {
     socket.join(roomId);
     socket.authorizedRoomId = roomId;
 
+    socket.displayName = cleanName || `User (${socket.id.slice(0, 4)})`;
+
+    const peerNames = {};
+    existingUsers.forEach((id) => {
+      const peerSocket = io.sockets.sockets.get(id);
+      peerNames[id] = peerSocket?.displayName || `User (${id.slice(0, 4)})`;
+    });
+
     socket.emit('join-success', {
       roomId,
-      isPasswordLocked: Boolean(state.passwordHash)
+      isPasswordLocked: Boolean(state.passwordHash),
+      peerNames
     });
     socket.emit('all-users', existingUsers);
     socket.emit('queue-updated', {
@@ -122,7 +122,11 @@ io.on('connection', (socket) => {
       queue: state.queue
     });
     socket.emit('chat-updated', state.messages);
-    socket.to(roomId).emit('user-joined', socket.id);
+    socket.to(roomId).emit('user-joined', {
+      userId: socket.id,
+      displayName: socket.displayName
+    });
+
   });
 
   // One-time room password setup (cannot be viewed, changed, or reset once set)
@@ -167,7 +171,7 @@ io.on('connection', (socket) => {
       msgId: crypto.randomBytes(4).toString('hex'),
       text: cleanText,
       senderId: socket.id,
-      senderName: `User (${socket.id.slice(0, 4)})`
+      senderName: socket.displayName || `User (${socket.id.slice(0, 4)})`
     });
 
     if (state.messages.length > 50) {
@@ -194,7 +198,7 @@ io.on('connection', (socket) => {
       title: safeTitle || 'Untitled Video',
       type: item.type === 'screen' ? 'screen' : 'file',
       ownerId: socket.id,
-      ownerName: `User (${socket.id.slice(0, 4)})`
+      ownerName: socket.displayName || `User (${socket.id.slice(0, 4)})`
     });
     io.to(socket.authorizedRoomId).emit('queue-updated', {
       activeHostId: state.activeHostId,

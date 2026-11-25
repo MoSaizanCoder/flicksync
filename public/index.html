@@ -393,6 +393,8 @@
     const iceCandidateQueues = { call: {}, cinema: {} };
     let knownPeers = new Set();
 
+    const peerDisplayNames = {};
+
     let isRoomAuthorized = false;
     let isPasswordLocked = false;
     let mediaInitialized = false;
@@ -457,6 +459,7 @@
         delete remoteCallVideos[id];
       }
       knownPeers.clear();
+      for (const k in peerDisplayNames) delete peerDisplayNames[k];
       updatePeerBadge();
 
       isRoomAuthorized = false;
@@ -501,7 +504,7 @@
       document.body.classList.remove('in-lobby');
 
       if (socket.connected) {
-        socket.emit('join-room', { roomId });
+        socket.emit('join-room', { roomId, displayName: profileName });
       } else {
         socket.connect();
       }
@@ -617,7 +620,7 @@
       e.preventDefault();
       const pwd = unlockPasswordInput.value;
       unlockPasswordInput.value = '';
-      socket.emit('join-room', { roomId, password: pwd });
+      socket.emit('join-room', { roomId, password: pwd, displayName: profileName });
     });
 
     document.getElementById('unlockNewRoomBtn').addEventListener('click', () => {
@@ -629,16 +632,24 @@
     socket.connect();
     socket.on('connect', () => {
       if (roomId) {
-        socket.emit('join-room', { roomId });
+        socket.emit('join-room', { roomId, displayName: profileName });
       }
     });
 
     let pendingCallUsers = [];
 
-    socket.on('join-success', async ({ isPasswordLocked: locked }) => {
+    socket.on('join-success', async ({ isPasswordLocked: locked, peerNames }) => {
       isRoomAuthorized = true;
       unlockRoomModal.classList.add('hidden');
       if (locked) markPasswordLockedUI();
+
+      if (peerNames && typeof peerNames === 'object') {
+        Object.entries(peerNames).forEach(([id, name]) => {
+          peerDisplayNames[id] = name;
+          const badge = document.querySelector(`#tile-${id} .cam-badge`);
+          if (badge) badge.textContent = name;
+        });
+      }
 
       if (!mediaInitialized) {
         try {
@@ -1100,8 +1111,17 @@
       }
     }
 
-    socket.on('user-joined', (userId) => {
+    socket.on('user-joined', (payload) => {
+      const userId = typeof payload === 'string' ? payload : payload?.userId;
+      const displayName = typeof payload === 'object' ? payload?.displayName : '';
+      if (!userId) return;
+
       knownPeers.add(userId);
+      if (displayName) {
+        peerDisplayNames[userId] = displayName;
+        const badge = document.querySelector(`#tile-${userId} .cam-badge`);
+        if (badge) badge.textContent = displayName;
+      }
       updatePeerBadge();
     });
 
@@ -1305,6 +1325,7 @@
       if (focusedCameraPeerId === userId) {
         clearFocusedCameraOnStage();
       }
+      delete peerDisplayNames[userId];
     });
 
     function renderRemoteCallVideo(userId, stream) {
@@ -1320,7 +1341,7 @@
 
         const label = document.createElement('span');
         label.className = 'cam-badge';
-        label.textContent = `Friend (${userId.slice(0, 4)})`;
+        label.textContent = peerDisplayNames[userId] || `Friend (${userId.slice(0, 4)})`;
 
         const expandBtn = document.createElement('button');
         expandBtn.type = 'button';
@@ -1336,6 +1357,10 @@
         remoteCallVideos[userId] = videoEl;
       }
       videoEl.srcObject = stream;
+      const existingBadge = document.querySelector(`#tile-${userId} .cam-badge`);
+      if (existingBadge && peerDisplayNames[userId]) {
+        existingBadge.textContent = peerDisplayNames[userId];
+      }
       videoEl.volume = parseFloat(document.getElementById('callVolume').value);
       videoEl.play().catch(() => {});
 
