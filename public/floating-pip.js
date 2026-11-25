@@ -144,6 +144,9 @@
             v.playsInline = true;
             v.muted = true; // Audio plays from the main tab to avoid echo
             v.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;';
+            if (id === 'local') {
+              v.style.transform = 'scaleX(-1)';
+            }
 
             const badge = doc.createElement('span');
             badge.style.cssText =

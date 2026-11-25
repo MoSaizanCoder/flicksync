@@ -1044,7 +1044,7 @@
       if (!isHostingCinema && !roomActiveHostId && !currentCinemaMode) {
         cinemaVideo.pause();
         cinemaVideo.srcObject = null;
-        cinemaVideo.removeAttribute('src');
+        cinemaVideo.classList.remove('is-local-mirror');
         stagePlaceholder.classList.remove('hidden');
       }
       updateCameraExpandButtons();
@@ -1071,6 +1071,7 @@
       focusedCameraPeerId = peerId;
       cinemaVideo.removeAttribute('src');
       cinemaVideo.srcObject = targetStream;
+      cinemaVideo.classList.toggle('is-local-mirror', peerId === 'local');
       cinemaVideo.muted = true; // Audio continues through the call stream without echo
       stagePlaceholder.classList.add('hidden');
       cinemaVideo.play().catch(() => {});
@@ -1821,6 +1822,7 @@
       cinemaVideo.pause();
       cinemaVideo.srcObject = null;
       cinemaVideo.removeAttribute('src');
+      cinemaVideo.classList.remove('is-local-mirror');
       cinemaAudio.pause();
       cinemaAudio.srcObject = null;
       cinemaAudio.removeAttribute('src');
