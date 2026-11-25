@@ -514,3 +514,27 @@ body.theater-fullscreen #exitFullscreenBtn {
 body.theater-fullscreen #exitFullscreenBtn:hover {
   background-color: #be123c;
 }
+
+/* =========================================================
+   Lobby / Landing Screen (Camera & Mic Off, Name + Room Only)
+   ========================================================= */
+body.in-lobby #topHeader,
+body.in-lobby .workspace-shell,
+body.in-lobby #queueDrawer,
+body.in-lobby #queueBackdrop {
+  display: none !important;
+}
+
+.lobby-screen {
+  display: none;
+  min-height: 100vh;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  padding: 1.25rem;
+  background: var(--bg-app);
+}
+
+body.in-lobby .lobby-screen {
+  display: flex;
+}

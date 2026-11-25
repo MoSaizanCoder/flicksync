@@ -26,6 +26,9 @@
       <button id="newRoomBtn" class="bg-slate-800 hover:bg-slate-700 text-xs px-3 py-2 rounded-lg border border-slate-700 transition">
         + New Session
       </button>
+      <button id="leaveRoomBtn" class="bg-rose-600 hover:bg-rose-500 text-white text-xs font-medium px-3 py-2 rounded-lg transition">
+        🚪 Leave
+      </button>
       <button id="copyLinkBtn" class="bg-indigo-600 hover:bg-indigo-500 text-xs font-medium px-3 py-2 rounded-lg transition">
         Copy Invite Link
       </button>
@@ -223,6 +226,58 @@
 
   </main>
 
+  <!-- Minimal Lobby Screen (Landing Page & Post-Leave Screen) -->
+  <section id="lobbyScreen" class="lobby-screen">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-sm w-full shadow-2xl flex flex-col gap-4">
+      <div>
+        <h1 class="text-xl font-bold text-indigo-400">🎬 FlickSync</h1>
+        <p class="text-xs text-slate-400 mt-0.5">Camera &amp; mic are off. Set your name to join or create a room.</p>
+      </div>
+
+      <div class="flex flex-col gap-1.5">
+        <label for="lobbyNameInput" class="text-xs font-medium text-slate-300">Your Profile Name</label>
+        <input
+          id="lobbyNameInput"
+          type="text"
+          maxlength="32"
+          placeholder="Enter your name (e.g. Alex)"
+          class="w-full bg-slate-950 border border-slate-700 focus:border-indigo-500 rounded-lg px-3 py-2 text-xs text-slate-100 placeholder-slate-500 outline-none"
+        />
+      </div>
+
+      <form id="joinByIdForm" class="flex flex-col gap-2">
+        <label for="lobbyRoomIdInput" class="text-xs font-medium text-slate-300">Room ID</label>
+        <div class="flex gap-2">
+          <input
+            id="lobbyRoomIdInput"
+            type="text"
+            maxlength="32"
+            placeholder="Enter room ID..."
+            class="flex-1 min-w-0 bg-slate-950 border border-slate-700 focus:border-indigo-500 rounded-lg px-3 py-2 text-xs text-slate-100 placeholder-slate-500 outline-none"
+            required
+          />
+          <button
+            type="submit"
+            class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3.5 py-2 rounded-lg transition shrink-0"
+          >
+            Join
+          </button>
+        </div>
+        <p id="lobbyErrorText" class="hidden text-xs text-rose-400"></p>
+      </form>
+
+      <div class="pt-2 border-t border-slate-800">
+        <button
+          id="lobbyCreateRoomBtn"
+          type="button"
+          class="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold py-2.5 px-4 rounded-lg transition"
+        >
+          + Create New Room
+        </button>
+      </div>
+    </div>
+  </section>
+
   <!-- Set Room Password Modal (One-Time Lock, Optional) -->
   <div id="setPasswordModal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
     <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-sm w-full shadow-2xl">
@@ -297,14 +352,15 @@
     const socket = io({ autoConnect: false });
 
     const pathParts = window.location.pathname.split('/');
-    let roomId = pathParts[1] === 'room' && pathParts[2]
+    const urlRoomId = pathParts[1] === 'room' && pathParts[2]
       ? pathParts[2].replace(/[^a-zA-Z0-9_-]/g, '')
-      : null;
-    if (!roomId || roomId.length < 3) {
-      roomId = Math.random().toString(36).substring(2, 9);
-      window.history.replaceState({}, '', `/room/${roomId}`);
+      : '';
+    let roomId = urlRoomId.length >= 3 ? urlRoomId : null;
+    if (roomId) {
+      document.getElementById('roomBadge').textContent = `Room: ${roomId}`;
     }
-    document.getElementById('roomBadge').textContent = `Room: ${roomId}`;
+
+    document.body.classList.add('in-lobby');
 
     const rtcConfig = {
       iceServers: [
@@ -345,6 +401,114 @@
     let didVideoEnd = false;
 
     const localQueuedFiles = new Map();
+
+    const PROFILE_NAME_KEY = 'flicksync_profile_name';
+    let profileName = (localStorage.getItem(PROFILE_NAME_KEY) || '').trim();
+
+    function syncProfileBadge() {
+      const labelEl = document.getElementById('localCamLabel');
+      if (labelEl) {
+        labelEl.textContent = profileName ? `${profileName} (You)` : 'You';
+      }
+    }
+
+    const initialLobbyNameInput = document.getElementById('lobbyNameInput');
+    const initialLobbyRoomInput = document.getElementById('lobbyRoomIdInput');
+    if (initialLobbyNameInput) initialLobbyNameInput.value = profileName;
+    if (initialLobbyRoomInput && roomId) initialLobbyRoomInput.value = roomId;
+    syncProfileBadge();
+
+    function stopCameraAndMicCompletely() {
+      if (localCallStream) {
+        localCallStream.getTracks().forEach(track => {
+          track.enabled = false;
+          track.stop();
+        });
+        localCallStream = null;
+      }
+      const localCamEl = document.getElementById('localCamVideo');
+      if (localCamEl) {
+        localCamEl.srcObject = null;
+      }
+      mediaInitialized = false;
+    }
+
+    function leaveCurrentRoomToLobby(prefillRoomId = '') {
+      if (document.body.classList.contains('theater-fullscreen')) {
+        toggleTheaterFullscreen(false);
+      }
+      cleanupLocalCinemaUI();
+      stopCameraAndMicCompletely();
+
+      Object.values(callPeers).forEach(pc => pc.close());
+      for (const k in callPeers) delete callPeers[k];
+      for (const id of Object.keys(remoteCallVideos)) {
+        const tile = document.getElementById(`tile-${id}`);
+        if (tile) tile.remove();
+        delete remoteCallVideos[id];
+      }
+      knownPeers.clear();
+      updatePeerBadge();
+
+      isRoomAuthorized = false;
+      roomActiveHostId = null;
+      if (socket.connected) {
+        socket.disconnect();
+      }
+
+      const nameInput = document.getElementById('lobbyNameInput');
+      const roomInput = document.getElementById('lobbyRoomIdInput');
+      const errEl = document.getElementById('lobbyErrorText');
+      if (nameInput) nameInput.value = profileName;
+      if (roomInput) roomInput.value = prefillRoomId;
+      if (errEl) errEl.classList.add('hidden');
+
+      if (!prefillRoomId) {
+        window.history.replaceState({}, '', '/');
+      }
+      document.body.classList.add('in-lobby');
+    }
+
+    function enterRoomFromLobby(targetRoomId) {
+      const cleaned = String(targetRoomId || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
+      const errEl = document.getElementById('lobbyErrorText');
+      if (cleaned.length < 3 || cleaned.length > 32) {
+        if (errEl) {
+          errEl.textContent = 'Room ID must be 3–32 letters, numbers, - or _.';
+          errEl.classList.remove('hidden');
+        }
+        return;
+      }
+      if (errEl) errEl.classList.add('hidden');
+
+      const nameInput = document.getElementById('lobbyNameInput');
+      profileName = (nameInput ? nameInput.value : profileName).trim().slice(0, 32);
+      localStorage.setItem(PROFILE_NAME_KEY, profileName);
+      syncProfileBadge();
+
+      roomId = cleaned;
+      document.getElementById('roomBadge').textContent = `Room: ${roomId}`;
+      window.history.replaceState({}, '', `/room/${roomId}`);
+      document.body.classList.remove('in-lobby');
+
+      if (socket.connected) {
+        socket.emit('join-room', { roomId });
+      } else {
+        socket.connect();
+      }
+    }
+
+    document.getElementById('leaveRoomBtn').addEventListener('click', () => leaveCurrentRoomToLobby(''));
+
+    document.getElementById('joinByIdForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      enterRoomFromLobby(document.getElementById('lobbyRoomIdInput').value);
+    });
+
+    document.getElementById('lobbyCreateRoomBtn').addEventListener('click', () => {
+      const randomId = Math.random().toString(36).substring(2, 9);
+      enterRoomFromLobby(randomId);
+    });
 
     // Web Audio API bridge (captures native <video> audio on mobile for WebRTC)
     let audioCtx = null;
@@ -455,7 +619,9 @@
     // Connect socket first; only initialize camera/mic AFTER server authorizes room entry
     socket.connect();
     socket.on('connect', () => {
-      socket.emit('join-room', { roomId });
+      if (roomId) {
+        socket.emit('join-room', { roomId });
+      }
     });
 
     let pendingCallUsers = [];
@@ -472,6 +638,7 @@
             audio: { echoCancellation: true, noiseSuppression: true }
           });
           document.getElementById('localCamVideo').srcObject = localCallStream;
+          syncProfileBadge();
         } catch (err) {
           console.warn('Camera/Mic blocked or unavailable:', err);
           localCallStream = new MediaStream();
