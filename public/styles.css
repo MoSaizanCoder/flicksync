@@ -582,3 +582,17 @@ body.cinema-active .cam-expand-btn {
 #cinemaVideo.is-local-mirror {
   transform: scaleX(-1);
 }
+
+/* =========================================================
+   Hidden Offscreen Relay Canvas for Mobile Video Capture
+   ========================================================= */
+.mobile-relay-canvas {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 2px;
+  height: 2px;
+  opacity: 0.01;
+  pointer-events: none;
+  z-index: -1;
+}
