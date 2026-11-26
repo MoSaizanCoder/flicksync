@@ -40,12 +40,17 @@
 
       const doc = pipWindow.document;
 
-      const link = doc.createElement('link');
-      link.rel = 'stylesheet';
-      link.href = `${window.location.origin}/floating-pip.css`;
-      doc.head.appendChild(link);
+      const themeLink = doc.createElement('link');
+      themeLink.rel = 'stylesheet';
+      themeLink.href = `${window.location.origin}/styles.css`;
+      doc.head.appendChild(themeLink);
 
       doc.body.className = 'pip-body';
+
+      const currentTheme = document.body.getAttribute('data-theme');
+      if (currentTheme) {
+        doc.body.setAttribute('data-theme', currentTheme);
+      }
 
       const bar = doc.createElement('div');
       bar.className = 'pip-bar';
@@ -184,6 +189,15 @@
   }
 
   window.FlickSyncFloatingPiP = {
+    syncTheme(themeName) {
+      if (!pipWindow || pipWindow.closed) return;
+      if (!themeName || themeName === 'default') {
+        pipWindow.document.body.removeAttribute('data-theme');
+      } else {
+        pipWindow.document.body.setAttribute('data-theme', themeName);
+      }
+    },
+
     init(config) {
       pipConfig = config;
       const btn = document.getElementById('pipCamerasBtn');

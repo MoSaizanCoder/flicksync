@@ -1,5 +1,6 @@
 /* =========================================================
    FlickSync — Document Picture-in-Picture Popup Styles
+   (Inherits all colors from :root in /styles.css)
    ========================================================= */
 * {
   box-sizing: border-box;
@@ -7,8 +8,8 @@
 
 body.pip-body {
   margin: 0;
-  background: #060913;
-  color: #f1f5f9;
+  background: var(--bg-app);
+  color: var(--text-primary);
   font-family: system-ui, -apple-system, sans-serif;
   display: flex;
   flex-direction: column;
@@ -21,16 +22,16 @@ body.pip-body {
   align-items: center;
   gap: 6px;
   padding: 6px 8px;
-  background: #0f172a;
-  border-bottom: 1px solid #1e293b;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
 }
 
 .pip-btn {
   flex: 1;
-  background: #1e293b;
-  color: #f8fafc;
-  border: 1px solid #334155;
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
   border-radius: 6px;
   padding: 4px 6px;
   font-size: 11px;
@@ -39,13 +40,13 @@ body.pip-body {
 }
 
 .pip-btn.is-off {
-  background: #e11d48;
-  border-color: #fb7185;
+  background: var(--accent-danger);
+  border-color: var(--accent-danger-border);
 }
 
 .pip-stop-btn {
-  background: #e11d48;
-  color: #ffffff;
+  background: var(--accent-danger);
+  color: var(--text-primary);
   border: none;
   border-radius: 6px;
   padding: 4px 8px;
@@ -66,8 +67,8 @@ body.pip-body {
 
 .pip-tile {
   position: relative;
-  background: #000000;
-  border: 1px solid #334155;
+  background: var(--bg-stage);
+  border: 1px solid var(--border-strong);
   border-radius: 8px;
   overflow: hidden;
   aspect-ratio: 16 / 10;
@@ -88,8 +89,8 @@ body.pip-body {
   position: absolute;
   bottom: 4px;
   left: 4px;
-  background: rgba(2, 6, 23, 0.8);
-  color: #e2e8f0;
+  background: var(--overlay-badge);
+  color: var(--text-secondary);
   font-size: 10px;
   padding: 2px 6px;
   border-radius: 4px;

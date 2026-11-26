@@ -70,6 +70,35 @@ function syncProfileBadge() {
   }
 }
 
+const MOOD_THEME_KEY = 'flicksync_mood_theme';
+const ALLOWED_THEMES = new Set(['default', 'romantic', 'scifi', 'comedy']);
+const moodThemeSelect = document.getElementById('moodThemeSelect');
+
+function applyMoodTheme(themeName) {
+  const safeTheme = ALLOWED_THEMES.has(themeName) ? themeName : 'default';
+  if (safeTheme === 'default') {
+    document.body.removeAttribute('data-theme');
+  } else {
+    document.body.setAttribute('data-theme', safeTheme);
+  }
+  if (moodThemeSelect) {
+    moodThemeSelect.value = safeTheme;
+  }
+  localStorage.setItem(MOOD_THEME_KEY, safeTheme);
+
+  if (window.FlickSyncFloatingPiP && window.FlickSyncFloatingPiP.syncTheme) {
+    window.FlickSyncFloatingPiP.syncTheme(safeTheme);
+  }
+}
+
+applyMoodTheme(localStorage.getItem(MOOD_THEME_KEY) || 'default');
+
+if (moodThemeSelect) {
+  moodThemeSelect.addEventListener('change', (e) => {
+    applyMoodTheme(e.target.value);
+  });
+}
+
 if (window.FlickSyncFloatingPiP) {
   window.FlickSyncFloatingPiP.init({
     getLocalCallStream: () => localCallStream,

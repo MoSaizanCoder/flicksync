@@ -21,6 +21,20 @@
     </div>
 
     <div class="flex flex-wrap items-center gap-2">
+      <div class="flex items-center gap-1.5 bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5">
+        <span class="text-xs">💡</span>
+        <select
+          id="moodThemeSelect"
+          aria-label="Mood Lighting Theme"
+          class="bg-transparent text-xs font-medium text-slate-200 outline-none cursor-pointer"
+        >
+          <option value="default" class="bg-slate-900 text-slate-100">🎬 Default</option>
+          <option value="romantic" class="bg-slate-900 text-slate-100">🌹 Romantic</option>
+          <option value="scifi" class="bg-slate-900 text-slate-100">🚀 Sci-Fi</option>
+          <option value="comedy" class="bg-slate-900 text-slate-100">🍿 Comedy</option>
+        </select>
+      </div>
+
       <button id="roomPasswordBtn" class="bg-slate-800 hover:bg-amber-600/90 text-xs font-medium px-3 py-2 rounded-lg border border-slate-700 transition">
         🔓 Set Password
       </button>
